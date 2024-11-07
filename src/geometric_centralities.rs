@@ -5,12 +5,12 @@ use dsi_progress_logger::{ProgressLog, ProgressLogger};
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
-use std::cell::RefCell;
 use std::cmp::min;
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
+use webgraph_algo::prelude::breadth_first::{QueueItem, SingleThreadedBreadthFirstVisit};
+use webgraph_algo::traits::SeqVisit;
 
 const DEFAULT_ALPHA: f64 = 0.5;
 
@@ -99,16 +99,16 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                 let graph = self.graph;
                 let local_pl = Arc::clone(&shared_pl);
                 scope.spawn(move |_| {
+                    let mut bfs: SingleThreadedBreadthFirstVisit<(), &G> =
+                        SingleThreadedBreadthFirstVisit::new(graph);
+
                     //println!("Started thread {}", i);
                     let atom_counter = thread_atomic_counter;
                     let num_of_nodes = num_of_nodes;
-                    let mut distances = vec![-1; num_of_nodes];
-                    let mut queue = VecDeque::new();
 
                     let mut target_node = atom_counter.inc();
                     while target_node < num_of_nodes {
-                        let centralities =
-                            Self::single_visit(&graph, target_node, &mut distances, &mut queue);
+                        let centralities = Self::single_visit(target_node, &mut bfs);
                         local_send_out_of_thread
                             .send((target_node, centralities))
                             .expect(&format!(
@@ -122,6 +122,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     }
                 });
             }
+
             for _ in 0..num_of_nodes {
                 let (
                     node,
@@ -149,6 +150,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
+    /*
     pub fn compute_with_2_channels(&mut self) {
         let num_of_nodes = self.graph.num_nodes();
         self.closeness = vec![-1f64; num_of_nodes];
@@ -276,7 +278,8 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             eprintln!("{}", pl.to_string());
         }
     }
-
+    */
+    /*
     pub fn compute_with_par_iter(&mut self, chunk_size: usize) {
         self.results = vec![
             GeometricCentralityResult {
@@ -324,12 +327,11 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             eprintln!("{}", pl.to_string());
         }
     }
+    */
 
     fn single_visit(
-        graph: &G,
         start: usize,
-        distances: &mut Vec<i64>,
-        queue: &mut VecDeque<usize>,
+        bfs: &mut SingleThreadedBreadthFirstVisit<(), &G>,
     ) -> GeometricCentralityResult {
         let mut closeness = 0f64;
         let mut harmonic = 0f64;
@@ -339,29 +341,27 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
         let base = DEFAULT_ALPHA;
 
-        distances.clear();
-        distances.resize(graph.num_nodes(), -1);
-        queue.clear();
+        bfs.reset();
+        bfs.visit(
+            start,
+            |args| {
+                let d = args.distance;
 
-        distances[start] = 0;
-        queue.push_back(start);
-
-        while let Some(node) = queue.pop_front() {
-            reachable += 1;
-            let d = distances[node] + 1;
-            let hd = 1f64 / d as f64;
-            let ed = base.pow(d as f64);
-
-            for successor in graph.successors(node) {
-                if distances[successor] == -1 {
-                    queue.push_back(successor);
-                    distances[successor] = d;
-                    closeness += d as f64;
-                    harmonic += hd;
-                    exponential += ed;
+                reachable += 1;
+                if d == 0 {
+                    //Skip first
+                    return Ok(());
                 }
-            }
-        }
+                let hd = 1f64 / d as f64;
+                let ed = base.pow(d as f64);
+                closeness += d as f64;
+                harmonic += hd;
+                exponential += ed;
+                Ok(())
+            },
+            &mut ProgressLogger::default(),
+        )
+        .expect("Error in bfs");
         if closeness == 0f64 {
             lin = 1f64;
         } else {
@@ -380,9 +380,9 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
 #[cfg(test)]
 mod tests {
+    use crate::geometric_centralities::GeometricCentralities;
     use webgraph::labels::Left;
     use webgraph::prelude::VecGraph;
-    use crate::geometric_centralities::GeometricCentralities;
 
     fn transpose_arc_list(
         arcs: impl IntoIterator<Item = (usize, usize)>,
@@ -391,11 +391,12 @@ mod tests {
     }
 
     #[test]
-    fn test_geom_2_chan() {
+    fn test_geom_atom_out_chan() {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0, true);
-        centralities.compute_with_2_channels();
+        centralities.compute_with_atomic_counter_out_channel();
+
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);
         assert_eq!(1f64 / 3f64, centralities.closeness[2]);
@@ -409,12 +410,13 @@ mod tests {
         assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
     }
 
+    /*
     #[test]
-    fn test_geom_atom_out_chan() {
+    fn test_geom_2_chan() {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0, true);
-        centralities.compute_with_atomic_counter_out_channel();
+        centralities.compute_with_2_channels();
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);
         assert_eq!(1f64 / 3f64, centralities.closeness[2]);
@@ -446,4 +448,5 @@ mod tests {
         assert_eq!(1f64, centralities.results[1].harmonic);
         assert_eq!(3f64 / 2f64, centralities.results[2].harmonic);
     }
+     */
 }

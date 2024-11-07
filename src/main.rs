@@ -10,6 +10,6 @@ fn main() {
         .load()
         .expect("Failed loading graph");
     let mut geom = GeometricCentralities::new(&graph, 0, true);
-    geom.compute_with_par_iter(10);
+    geom.compute_with_atomic_counter_out_channel();
     println!("Done");
 }

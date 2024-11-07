@@ -9,7 +9,7 @@ use std::cmp::min;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::prelude::breadth_first::{QueueItem, SingleThreadedBreadthFirstVisit};
+use webgraph_algo::prelude::breadth_first::{Event, QueueItem, SingleThreadedBreadthFirstVisit};
 use webgraph_algo::traits::SeqVisit;
 
 const DEFAULT_ALPHA: f64 = 0.5;
@@ -164,6 +164,10 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
         bfs.reset();
         bfs.visit(start, |args| {
+                if args.event == Event::Known {
+                    return Ok(());
+                }
+            
                 let d = args.distance;
 
                 reachable += 1;

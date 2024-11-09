@@ -1,16 +1,13 @@
 use atomic_counter::AtomicCounter;
 use common_traits::Number;
 use crossbeam_channel::unbounded;
-use dsi_progress_logger::{progress_logger, ProgressLog, ProgressLogger};
-use rayon::iter::IndexedParallelIterator;
-use rayon::iter::IntoParallelRefMutIterator;
-use rayon::iter::ParallelIterator;
+use dsi_progress_logger::{ProgressLog, ProgressLogger};
 use std::cmp::min;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::prelude::breadth_first::{Event, QueueItem, SingleThreadedBreadthFirstVisit};
-use webgraph_algo::traits::SeqVisit;
+use webgraph_algo::prelude::breadth_first::{EventPred, Seq};
+use webgraph_algo::traits::Sequential;
 
 const DEFAULT_ALPHA: f64 = 0.5;
 
@@ -99,8 +96,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                 let graph = self.graph;
                 let local_pl = Arc::clone(&shared_pl);
                 scope.spawn(move |_| {
-                    let mut bfs: SingleThreadedBreadthFirstVisit<(), &G> =
-                        SingleThreadedBreadthFirstVisit::new(graph);
+                    let mut bfs = webgraph_algo::algo::visits::breadth_first::Seq::new(graph);
 
                     //println!("Started thread {}", i);
                     let atom_counter = thread_atomic_counter;
@@ -150,10 +146,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    fn single_visit(
-        start: usize,
-        bfs: &mut SingleThreadedBreadthFirstVisit<(), &G>,
-    ) -> GeometricCentralityResult {
+    fn single_visit(start: usize, bfs: &mut Seq<&G>) -> GeometricCentralityResult {
         let mut closeness = 0f64;
         let mut harmonic = 0f64;
         let lin;
@@ -163,25 +156,33 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let base = DEFAULT_ALPHA;
 
         bfs.reset();
-        bfs.visit(start, |args| {
-                if args.event == Event::Known {
-                    return Ok(());
+        bfs.visit(
+            start,
+            |args| {
+                match args {
+                    EventPred::Init { root } => {
+                        eprintln!("starting from {root}");
+                        Ok::<(), ()>(())
+                    }
+                    EventPred::Known { .. } => Ok(()),
+                    EventPred::Unknown { distance, .. } => {
+                        let d = distance;
+                        reachable += 1;
+                        if d == 0 {
+                            //Skip first
+                            return Ok(());
+                        }
+                        let hd = 1f64 / d as f64;
+                        let ed = base.pow(d as f64);
+                        closeness += d as f64;
+                        harmonic += hd;
+                        exponential += ed;
+                        Ok(())
+                    }
                 }
-            
-                let d = args.distance;
-
-                reachable += 1;
-                if d == 0 {
-                    //Skip first
-                    return Ok(());
-                }
-                let hd = 1f64 / d as f64;
-                let ed = base.pow(d as f64);
-                closeness += d as f64;
-                harmonic += hd;
-                exponential += ed;
-                Ok(())
-            }, &mut Option::<ProgressLogger>::None)
+            },
+            &mut Option::<ProgressLogger>::None,
+        )
         .expect("Error in bfs");
         if closeness == 0f64 {
             lin = 1f64;

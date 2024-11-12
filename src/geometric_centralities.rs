@@ -71,7 +71,8 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         self.lin = vec![-1f64; num_of_nodes];
         self.exponential = vec![-1f64; num_of_nodes];
         self.reachable = vec![0; num_of_nodes];
-
+        self.atomic_counter.reset();
+        
         let logging = self.logging;
         let num_threads = min(self.graph.num_nodes(), self.num_of_threads);
         if logging {

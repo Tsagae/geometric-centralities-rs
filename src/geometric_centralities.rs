@@ -64,7 +64,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    pub fn compute_with_atomic_counter_out_channel(&mut self) {
+    pub fn compute_with_atomic_counter_out_channel(&mut self, reset_action: fn(&mut Seq<&G>)) {
         let num_of_nodes = self.graph.num_nodes();
         self.closeness = vec![-1f64; num_of_nodes];
         self.harmonic = vec![-1f64; num_of_nodes];
@@ -72,11 +72,11 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         self.exponential = vec![-1f64; num_of_nodes];
         self.reachable = vec![0; num_of_nodes];
         self.atomic_counter.reset();
-        
+
         let logging = self.logging;
         let num_threads = min(self.graph.num_nodes(), self.num_of_threads);
         if logging {
-            self.pl.start(&format!(
+            self.pl.start(format!(
                 "Computing geometric centralities with {num_threads} threads..."
             ));
         }
@@ -91,21 +91,21 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let (send_out_of_thread, receive_from_thread) = unbounded();
         thread_pool.in_place_scope(|scope| {
             for i in 0..num_threads {
-                let local_send_out_of_thread = (&send_out_of_thread).clone();
+                let local_send_out_of_thread = send_out_of_thread.clone();
                 let thread_atomic_counter = Arc::clone(&self.atomic_counter);
                 let num_of_nodes = self.graph.num_nodes();
                 let graph = self.graph;
                 let local_pl = Arc::clone(&shared_pl);
                 scope.spawn(move |_| {
-                    let mut bfs = webgraph_algo::algo::visits::breadth_first::Seq::new(graph);
+                    let mut bfs = Seq::new(graph);
 
-                    //println!("Started thread {}", i);
+                    //println!("Started thread id: {:?}", thread::current().id());
                     let atom_counter = thread_atomic_counter;
                     let num_of_nodes = num_of_nodes;
 
                     let mut target_node = atom_counter.inc();
                     while target_node < num_of_nodes {
-                        let centralities = Self::single_visit(target_node, &mut bfs);
+                        let centralities = Self::single_visit(target_node, &mut bfs, reset_action);
                         local_send_out_of_thread
                             .send((target_node, centralities))
                             .expect(&format!(
@@ -142,12 +142,15 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         });
         if logging {
             let mut pl = shared_pl.lock().expect("Error in taking mut pl");
-            pl.done();
-            eprintln!("{}", pl.to_string());
+            pl.done_with_count(num_of_nodes);
         }
     }
 
-    fn single_visit(start: usize, bfs: &mut Seq<&G>) -> GeometricCentralityResult {
+    fn single_visit(
+        start: usize,
+        bfs: &mut Seq<&G>,
+        reset_action: fn(&mut Seq<&G>),
+    ) -> GeometricCentralityResult {
         let mut closeness = 0f64;
         let mut harmonic = 0f64;
         let lin;
@@ -156,7 +159,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
         let base = DEFAULT_ALPHA;
 
-        bfs.reset();
+        reset_action(bfs);
         bfs.visit(
             start,
             |args| {
@@ -206,6 +209,7 @@ mod tests {
     use crate::geometric_centralities::GeometricCentralities;
     use webgraph::labels::Left;
     use webgraph::prelude::VecGraph;
+    use webgraph_algo::prelude::Sequential;
 
     fn transpose_arc_list(
         arcs: impl IntoIterator<Item = (usize, usize)>,
@@ -218,7 +222,7 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0, true);
-        centralities.compute_with_atomic_counter_out_channel();
+        centralities.compute_with_atomic_counter_out_channel(|bfs| bfs.reset());
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);

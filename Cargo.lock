@@ -649,6 +649,7 @@ dependencies = [
  "crossbeam-channel",
  "dsi-progress-logger",
  "env_logger",
+ "log",
  "rayon",
  "webgraph",
  "webgraph-algo",
@@ -1622,6 +1623,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "sux"
+version = "0.4.7"
+dependencies = [
+ "ambassador",
+ "anyhow",
+ "bitflags 2.6.0",
+ "bytemuck",
+ "common_traits 0.11.0",
+ "core_affinity",
+ "dsi-progress-logger",
+ "env_logger",
+ "epserde",
+ "flate2",
+ "impl-tools",
+ "lender",
+ "libc",
+ "log",
+ "mem_dbg",
+ "mmap-rs",
+ "num-traits",
+ "num_cpus",
+ "rand",
+ "rayon",
+ "rdst",
+ "tempfile",
+ "zstd",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1977,7 +2007,7 @@ dependencies = [
  "rayon",
  "rdst",
  "sealed 0.5.0",
- "sux",
+ "sux 0.4.6",
  "sysinfo 0.30.13",
  "tempfile",
 ]
@@ -1985,7 +2015,6 @@ dependencies = [
 [[package]]
 name = "webgraph-algo"
 version = "0.1.0"
-source = "git+https://github.com/MatteoH2O1999/webgraph-algo-rs.git#a0e78ccdcdce0ccdc58be0aed3755e8c0fef3c33"
 dependencies = [
  "anyhow",
  "common_traits 0.11.0",
@@ -1999,7 +2028,7 @@ dependencies = [
  "rayon",
  "sealed 0.6.0",
  "stderrlog",
- "sux",
+ "sux 0.4.7",
  "tempfile",
  "thiserror 2.0.1",
  "unwrap-infallible",

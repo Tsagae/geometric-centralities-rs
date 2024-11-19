@@ -29,19 +29,11 @@ pub struct GeometricCentralities<'a, G: RandomAccessGraph> {
     pub results: Vec<GeometricCentralityResult>,
     graph: &'a G,
     num_of_threads: usize,
-    pl: ProgressLogger,
-    logging: bool,
     atomic_counter: Arc<atomic_counter::ConsistentCounter>,
 }
 
 impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
-    pub fn new(graph: &G, num_of_threads: usize, logging: bool) -> GeometricCentralities<G> {
-        let mut pl = ProgressLogger::default();
-        pl.display_memory(true)
-            .item_name("visit")
-            .local_speed(true)
-            .expected_updates(Some(graph.num_nodes()));
-
+    pub fn new(graph: &G, num_of_threads: usize) -> GeometricCentralities<G> {
         GeometricCentralities {
             graph,
             num_of_threads: min(
@@ -52,8 +44,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     num_of_threads
                 },
             ),
-            pl,
-            logging,
             closeness: vec![],
             harmonic: vec![],
             lin: vec![],
@@ -64,7 +54,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    pub fn compute_with_atomic_counter_out_channel(&mut self, reset_action: fn(&mut Seq<&G>)) {
+    pub fn compute_with_atomic_counter_out_channel<P: ProgressLog + Send + Sync>(&mut self, reset_action: fn(&mut Seq<&G>), pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
         self.closeness = vec![-1f64; num_of_nodes];
         self.harmonic = vec![-1f64; num_of_nodes];
@@ -73,15 +63,17 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         self.reachable = vec![0; num_of_nodes];
         self.atomic_counter.reset();
 
-        let logging = self.logging;
         let num_threads = min(self.graph.num_nodes(), self.num_of_threads);
-        if logging {
-            self.pl.start(format!(
-                "Computing geometric centralities with {num_threads} threads..."
-            ));
-        }
-        let shared_pl = Arc::new(Mutex::new(&mut self.pl));
+        pl.start(format!(
+            "Computing geometric centralities with {num_threads} threads..."
+        ));
 
+        pl.display_memory(true)
+            .item_name("visit")
+            .local_speed(true)
+            .expected_updates(Some(num_of_nodes));
+
+        let shared_pl = Arc::new(Mutex::new(pl));
         let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
         thread_pool_builder = thread_pool_builder.num_threads(num_threads);
         let thread_pool = thread_pool_builder
@@ -112,7 +104,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                                 "Failed send out of thread {i} target_node: {target_node}"
                             ));
                         target_node = atom_counter.inc();
-                        if logging {
+                        {
                             let mut pl = local_pl.lock().expect("Error in taking mut pl");
                             pl.update();
                         }
@@ -140,7 +132,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                 self.reachable[node] = reachable;
             }
         });
-        if logging {
+        {
             let mut pl = shared_pl.lock().expect("Error in taking mut pl");
             pl.done_with_count(num_of_nodes);
         }
@@ -187,7 +179,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             },
             &mut Option::<ProgressLogger>::None,
         )
-        .expect("Error in bfs");
+            .expect("Error in bfs");
         if closeness == 0f64 {
             lin = 1f64;
         } else {
@@ -206,14 +198,15 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
 #[cfg(test)]
 mod tests {
+    use dsi_progress_logger::ProgressLogger;
     use crate::geometric_centralities::GeometricCentralities;
     use webgraph::labels::Left;
     use webgraph::prelude::VecGraph;
     use webgraph_algo::prelude::Sequential;
 
     fn transpose_arc_list(
-        arcs: impl IntoIterator<Item = (usize, usize)>,
-    ) -> impl IntoIterator<Item = (usize, usize)> {
+        arcs: impl IntoIterator<Item=(usize, usize)>,
+    ) -> impl IntoIterator<Item=(usize, usize)> {
         arcs.into_iter().map(|(a, b)| (b, a))
     }
 
@@ -221,8 +214,8 @@ mod tests {
     fn test_geom_atom_out_chan() {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
-        let mut centralities = GeometricCentralities::new(&l, 0, true);
-        centralities.compute_with_atomic_counter_out_channel(|bfs| bfs.reset());
+        let mut centralities = GeometricCentralities::new(&l, 0);
+        centralities.compute_with_atomic_counter_out_channel(|bfs| bfs.reset(), &mut Option::<ProgressLogger>::None);
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);

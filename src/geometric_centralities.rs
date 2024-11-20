@@ -180,6 +180,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
                     let mut queue: VecDeque<usize> = VecDeque::new();
                     let mut distances: Vec<i64> = Vec::new();
+                    distances.resize(num_of_nodes, -1);
 
                     let mut target_node = atom_counter.inc();
                     while target_node < num_of_nodes {

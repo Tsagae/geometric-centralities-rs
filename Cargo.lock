@@ -644,7 +644,9 @@ dependencies = [
 name = "geometric-centralities-rs"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "atomic-counter",
+ "clap",
  "common_traits 0.10.2",
  "crossbeam-channel",
  "dsi-progress-logger",

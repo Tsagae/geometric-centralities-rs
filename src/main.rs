@@ -15,11 +15,11 @@ fn main() {
         .expect("Failed loading graph");
     let mut geom = GeometricCentralities::new(&graph, 0);
 
-    info!("-------------- Reset no rayon --------------");
-    geom.compute_with_atomic_counter_out_channel(|bfs| bfs.reset_no_rayon(), &mut ProgressLogger::default());
+    info!("-------------- Geom generic --------------");
+    geom.compute_with_atomic_counter_out_channel_generic(&mut ProgressLogger::default());
 
-    info!("-------------- Reset min_len_iter 10000 --------------");
-    geom.compute_with_atomic_counter_out_channel(|bfs| bfs.reset_min_len_iter(10_000), &mut ProgressLogger::default());
+    info!("-------------- Geom no generic --------------");
+    geom.compute_with_atomic_counter_out_channel(&mut ProgressLogger::default());
 
     info!("\nDone");
 }

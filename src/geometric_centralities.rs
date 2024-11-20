@@ -178,9 +178,12 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     let atom_counter = thread_atomic_counter;
                     let num_of_nodes = num_of_nodes;
 
+                    let mut queue: VecDeque<usize> = VecDeque::new();
+                    let mut distances: Vec<i64> = Vec::new();
+
                     let mut target_node = atom_counter.inc();
                     while target_node < num_of_nodes {
-                        let centralities = Self::single_visit(graph, target_node);
+                        let centralities = Self::single_visit(graph, target_node, &mut queue, &mut distances);
                         local_send_out_of_thread
                             .send((target_node, centralities))
                             .expect(&format!(
@@ -280,6 +283,8 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
     fn single_visit(
         graph: &G,
         start: usize,
+        queue: &mut VecDeque<usize>,
+        distances: &mut [i64]
     ) -> GeometricCentralityResult {
         let mut closeness = 0f64;
         let mut harmonic = 0f64;
@@ -289,9 +294,8 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
         let base = DEFAULT_ALPHA;
 
-        let mut queue: VecDeque<usize> = VecDeque::new();
-        let mut distances: Vec<i64> = Vec::new();
-        distances.resize(graph.num_nodes(), -1);
+        queue.clear();
+        distances.fill(-1);
 
         distances[start] = 0;
         queue.push_back(start);

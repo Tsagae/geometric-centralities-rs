@@ -653,6 +653,7 @@ dependencies = [
  "env_logger",
  "log",
  "rayon",
+ "sux 0.4.7",
  "webgraph",
  "webgraph-algo",
 ]

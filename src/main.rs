@@ -15,6 +15,9 @@ struct Args {
     path: String,
 
     #[clap(long, short)]
+    all: bool,
+
+    #[clap(long, short)]
     generic: bool,
 
     #[clap(long, short)]
@@ -22,6 +25,9 @@ struct Args {
 
     #[clap(long, short)]
     no_generic: bool,
+
+    #[clap(long, short)]
+    no_dist_vec: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -35,21 +41,26 @@ fn main() -> anyhow::Result<()> {
         .expect("Failed loading graph");
     let mut geom = GeometricCentralities::new(&graph, 0);
 
-    if args.generic {
+    if args.all || args.generic {
         info!("-------------- Geom generic --------------");
         geom.compute_with_atomic_counter_out_channel_generic(&mut ProgressLogger::default());
     }
 
-    if args.generic_no_known {
+    if args.all || args.generic_no_known {
         info!("-------------- Geom generic no known --------------");
         geom.compute_with_atomic_counter_out_channel_generic_no_known(&mut ProgressLogger::default());
     }
 
-    if args.no_generic {
+    if args.all || args.no_dist_vec {
+        info!("-------------- Geom no dist vec --------------");
+        geom.compute_with_atomic_counter_out_channel_no_dist_vec(&mut ProgressLogger::default());
+    }
+
+    if args.all || args.no_generic {
         info!("-------------- Geom no generic --------------");
         geom.compute_with_atomic_counter_out_channel(&mut ProgressLogger::default());
     }
-   
+
     info!("Done");
 
     Ok(())

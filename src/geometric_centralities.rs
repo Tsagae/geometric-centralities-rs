@@ -7,6 +7,7 @@ use std::cmp::min;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
+use sux::bits::BitVec;
 use webgraph::traits::RandomAccessGraph;
 use webgraph_algo::prelude::breadth_first::{EventPred, Seq, SeqNoKnown};
 use webgraph_algo::traits::Sequential;
@@ -228,6 +229,47 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
+    pub fn compute_with_atomic_counter_out_channel_no_dist_vec<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+        let num_of_nodes = self.graph.num_nodes();
+        let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
+        let (send_out_of_thread, receive_from_thread) = unbounded();
+        thread_pool.in_place_scope(|scope| {
+            for i in 0..num_threads {
+                let local_send_out_of_thread = send_out_of_thread.clone();
+                let thread_atomic_counter = Arc::clone(&self.atomic_counter);
+                let num_of_nodes = self.graph.num_nodes();
+                let graph = self.graph;
+                let local_pl = Arc::clone(&shared_pl);
+                scope.spawn(move |_| {
+                    //println!("Started thread id: {:?}", thread::current().id());
+                    let atom_counter = thread_atomic_counter;
+                    let num_of_nodes = num_of_nodes;
+
+                    let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+                    let mut visited = BitVec::with_value(num_of_nodes, false);
+
+                    let mut target_node = atom_counter.inc();
+                    while target_node < num_of_nodes {
+                        let centralities = Self::single_visit_no_dist_vec(graph, target_node, &mut queue, &mut visited);
+                        local_send_out_of_thread
+                            .send((target_node, centralities))
+                            .unwrap_or_else(|_| panic!("Failed send out of thread {i} target_node: {target_node}"));
+                        target_node = atom_counter.inc();
+                        {
+                            let mut pl = local_pl.lock().expect("Error in taking mut pl");
+                            pl.update();
+                        }
+                    }
+                });
+            }
+            self.collect_results(num_of_nodes, receive_from_thread);
+        });
+        {
+            let mut pl = shared_pl.lock().expect("Error in taking mut pl");
+            pl.done_with_count(num_of_nodes);
+        }
+    }
+
     fn single_visit_generic(
         start: usize,
         bfs: &mut Seq<&G>,
@@ -370,6 +412,56 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                 if distances[successor] == -1 {
                     queue.push_back(successor);
                     distances[successor] = d;
+                    closeness += d as f64;
+                    harmonic += hd;
+                    exponential += ed;
+                }
+            }
+        }
+        if closeness == 0f64 {
+            lin = 1f64;
+        } else {
+            closeness = 1f64 / closeness;
+            lin = reachable as f64 * reachable as f64 * closeness;
+        }
+        GeometricCentralityResult {
+            closeness,
+            harmonic,
+            lin,
+            exponential,
+            reachable,
+        }
+    }
+
+    fn single_visit_no_dist_vec(
+        graph: &G,
+        start: usize,
+        queue: &mut VecDeque<(usize, usize)>,
+        visited: &mut BitVec,
+    ) -> GeometricCentralityResult {
+        let mut closeness = 0f64;
+        let mut harmonic = 0f64;
+        let lin;
+        let mut exponential = 0f64;
+        let mut reachable: usize = 0;
+
+        let base = DEFAULT_ALPHA;
+
+        queue.clear();
+        visited.fill_no_rayon(false);
+
+        queue.push_back((start, 0));
+
+        while let Some((node, distance)) = queue.pop_front() {
+            reachable += 1;
+            let d = distance + 1;
+            let hd = 1f64 / d as f64;
+            let ed = base.pow(d as f64);
+
+            for successor in graph.successors(node) {
+                if !visited[successor] {
+                    visited.set(successor, true);
+                    queue.push_back((successor, d));
                     closeness += d as f64;
                     harmonic += hd;
                     exponential += ed;

@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 webgraph = { git = "https://github.com/vigna/webgraph-rs.git" }
 webgraph-algo = { path = "../webgraph-algo-rs" }
+sux = { path = "../sux-rs" }
 dsi-progress-logger = "0.2.4"
 crossbeam-channel = "0.5.13"
 atomic-counter = "1.0.1"

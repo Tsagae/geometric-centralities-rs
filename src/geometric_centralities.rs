@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::prelude::breadth_first::{EventPred, Seq};
+use webgraph_algo::prelude::breadth_first::{EventPred, Seq, SeqNoKnown};
 use webgraph_algo::traits::Sequential;
 
 const DEFAULT_ALPHA: f64 = 0.5;
@@ -138,6 +138,91 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             pl.done_with_count(num_of_nodes);
         }
     }
+
+    pub fn compute_with_atomic_counter_out_channel_generic_no_known<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+        let num_of_nodes = self.graph.num_nodes();
+        self.closeness = vec![-1f64; num_of_nodes];
+        self.harmonic = vec![-1f64; num_of_nodes];
+        self.lin = vec![-1f64; num_of_nodes];
+        self.exponential = vec![-1f64; num_of_nodes];
+        self.reachable = vec![0; num_of_nodes];
+        self.atomic_counter.reset();
+
+        let num_threads = min(self.graph.num_nodes(), self.num_of_threads);
+        pl.start(format!(
+            "Computing geometric centralities with {num_threads} threads..."
+        ));
+
+        pl.display_memory(true)
+            .item_name("visit")
+            .local_speed(true)
+            .expected_updates(Some(num_of_nodes));
+
+        let shared_pl = Arc::new(Mutex::new(pl));
+        let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
+        thread_pool_builder = thread_pool_builder.num_threads(num_threads);
+        let thread_pool = thread_pool_builder
+            .build()
+            .expect("Error in building thread pool");
+
+        let (send_out_of_thread, receive_from_thread) = unbounded();
+        thread_pool.in_place_scope(|scope| {
+            for i in 0..num_threads {
+                let local_send_out_of_thread = send_out_of_thread.clone();
+                let thread_atomic_counter = Arc::clone(&self.atomic_counter);
+                let num_of_nodes = self.graph.num_nodes();
+                let graph = self.graph;
+                let local_pl = Arc::clone(&shared_pl);
+                scope.spawn(move |_| {
+                    let mut bfs = SeqNoKnown::new(graph);
+
+                    //println!("Started thread id: {:?}", thread::current().id());
+                    let atom_counter = thread_atomic_counter;
+                    let num_of_nodes = num_of_nodes;
+
+                    let mut target_node = atom_counter.inc();
+                    while target_node < num_of_nodes {
+                        let centralities = Self::single_visit_generic_no_known(target_node, &mut bfs);
+                        local_send_out_of_thread
+                            .send((target_node, centralities))
+                            .expect(&format!(
+                                "Failed send out of thread {i} target_node: {target_node}"
+                            ));
+                        target_node = atom_counter.inc();
+                        {
+                            let mut pl = local_pl.lock().expect("Error in taking mut pl");
+                            pl.update();
+                        }
+                    }
+                });
+            }
+
+            for _ in 0..num_of_nodes {
+                let (
+                    node,
+                    GeometricCentralityResult {
+                        closeness,
+                        harmonic,
+                        lin,
+                        exponential,
+                        reachable,
+                    },
+                ) = receive_from_thread
+                    .recv()
+                    .expect("Failed receiving from thread");
+                self.closeness[node] = closeness;
+                self.harmonic[node] = harmonic;
+                self.lin[node] = lin;
+                self.exponential[node] = exponential;
+                self.reachable[node] = reachable;
+            }
+        });
+        {
+            let mut pl = shared_pl.lock().expect("Error in taking mut pl");
+            pl.done_with_count(num_of_nodes);
+        }
+    }
+
 
     pub fn compute_with_atomic_counter_out_channel<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
@@ -281,6 +366,62 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
+    fn single_visit_generic_no_known(
+        start: usize,
+        bfs: &mut SeqNoKnown<&G>,
+    ) -> GeometricCentralityResult {
+        let mut closeness = 0f64;
+        let mut harmonic = 0f64;
+        let lin;
+        let mut exponential = 0f64;
+        let mut reachable: usize = 0;
+
+        let base = DEFAULT_ALPHA;
+
+        bfs.reset_no_rayon();
+        bfs.visit(
+            start,
+            |args| {
+                match args {
+                    EventPred::Init { root } => {
+                        eprintln!("starting from {root}");
+                        Ok::<(), ()>(())
+                    }
+                    EventPred::Known { .. } => Ok(()),
+                    EventPred::Unknown { distance, .. } => {
+                        let d = distance;
+                        reachable += 1;
+                        if d == 0 {
+                            //Skip first
+                            return Ok(());
+                        }
+                        let hd = 1f64 / d as f64;
+                        let ed = base.pow(d as f64);
+                        closeness += d as f64;
+                        harmonic += hd;
+                        exponential += ed;
+                        Ok(())
+                    }
+                }
+            },
+            &mut Option::<ProgressLogger>::None,
+        )
+            .expect("Error in bfs");
+        if closeness == 0f64 {
+            lin = 1f64;
+        } else {
+            closeness = 1f64 / closeness;
+            lin = reachable as f64 * reachable as f64 * closeness;
+        }
+        GeometricCentralityResult {
+            closeness,
+            harmonic,
+            lin,
+            exponential,
+            reachable,
+        }
+    }
+
     fn single_visit(
         graph: &G,
         start: usize,
@@ -352,7 +493,7 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute_with_atomic_counter_out_channel(&mut Option::<ProgressLogger>::None);
+        centralities.compute_with_atomic_counter_out_channel_generic_no_known(&mut Option::<ProgressLogger>::None);
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);

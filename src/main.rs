@@ -18,6 +18,9 @@ struct Args {
     generic: bool,
 
     #[clap(long, short)]
+    generic_no_known: bool,
+
+    #[clap(long, short)]
     no_generic: bool,
 }
 
@@ -37,11 +40,16 @@ fn main() -> anyhow::Result<()> {
         geom.compute_with_atomic_counter_out_channel_generic(&mut ProgressLogger::default());
     }
 
+    if args.generic_no_known {
+        info!("-------------- Geom generic no known --------------");
+        geom.compute_with_atomic_counter_out_channel_generic_no_known(&mut ProgressLogger::default());
+    }
+
     if args.no_generic {
         info!("-------------- Geom no generic --------------");
         geom.compute_with_atomic_counter_out_channel(&mut ProgressLogger::default());
     }
-
+   
     info!("Done");
 
     Ok(())

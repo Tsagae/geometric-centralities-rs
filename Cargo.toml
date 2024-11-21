@@ -5,10 +5,14 @@ edition = "2021"
 
 [dependencies]
 webgraph = { git = "https://github.com/vigna/webgraph-rs.git" }
-webgraph-algo = { git = "https://github.com/MatteoH2O1999/webgraph-algo-rs.git" }
+webgraph-algo = { path = "../webgraph-algo-rs" }
+sux = { path = "../sux-rs" }
 dsi-progress-logger = "0.2.4"
 crossbeam-channel = "0.5.13"
 atomic-counter = "1.0.1"
 rayon = "1.10.0"
 common_traits = "0.10.0"
 env_logger = "0.11.5"
+log = "0.4.22"
+anyhow = "1.0.93"
+clap = { version = "4.5.20", features = ["derive"] }

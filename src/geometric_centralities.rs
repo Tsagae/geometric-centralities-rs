@@ -280,12 +280,11 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let mut exponential = 0f64;
         let mut reachable: usize = 0;
 
-        let base = DEFAULT_ALPHA;
-
         bfs.reset_no_rayon();
         bfs.visit(
             start,
             |args| {
+                let base = DEFAULT_ALPHA;
                 match args {
                     EventPred::Init { root } => {
                         eprintln!("starting from {root}");
@@ -336,12 +335,11 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let mut exponential = 0f64;
         let mut reachable: usize = 0;
 
-        let base = DEFAULT_ALPHA;
-
         bfs.reset_no_rayon();
         bfs.visit(
             start,
             |args| {
+                let base = DEFAULT_ALPHA;
                 match args {
                     EventPred::Init { root } => {
                         eprintln!("starting from {root}");

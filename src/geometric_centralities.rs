@@ -2,6 +2,7 @@ use atomic_counter::AtomicCounter;
 use common_traits::Number;
 use crossbeam_channel::unbounded;
 use dsi_progress_logger::{ProgressLog, ProgressLogger};
+use rayon::ThreadPool;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -55,7 +56,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    pub fn compute_with_atomic_counter_out_channel_generic<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+    fn init<'a, P: ProgressLog + Send + Sync>(&mut self, pl: &'a mut P) -> (Arc<Mutex<&'a mut P>>, ThreadPool, usize) {
         let num_of_nodes = self.graph.num_nodes();
         self.closeness = vec![-1f64; num_of_nodes];
         self.harmonic = vec![-1f64; num_of_nodes];
@@ -80,7 +81,34 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let thread_pool = thread_pool_builder
             .build()
             .expect("Error in building thread pool");
+        (shared_pl, thread_pool, num_threads)
+    }
 
+    fn collect_results(&mut self, num_of_nodes: usize, receive_from_thread: crossbeam_channel::Receiver<(usize, GeometricCentralityResult)>) {
+        for _ in 0..num_of_nodes {
+            let (
+                node,
+                GeometricCentralityResult {
+                    closeness,
+                    harmonic,
+                    lin,
+                    exponential,
+                    reachable,
+                },
+            ) = receive_from_thread
+                .recv()
+                .expect("Failed receiving from thread");
+            self.closeness[node] = closeness;
+            self.harmonic[node] = harmonic;
+            self.lin[node] = lin;
+            self.exponential[node] = exponential;
+            self.reachable[node] = reachable;
+        }
+    }
+
+    pub fn compute_with_atomic_counter_out_channel_generic<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+        let num_of_nodes = self.graph.num_nodes();
+        let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
         let (send_out_of_thread, receive_from_thread) = unbounded();
         thread_pool.in_place_scope(|scope| {
             for i in 0..num_threads {
@@ -101,9 +129,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                         let centralities = Self::single_visit_generic(target_node, &mut bfs);
                         local_send_out_of_thread
                             .send((target_node, centralities))
-                            .expect(&format!(
-                                "Failed send out of thread {i} target_node: {target_node}"
-                            ));
+                            .unwrap_or_else(|_| panic!("Failed send out of thread {i} target_node: {target_node}"));
                         target_node = atom_counter.inc();
                         {
                             let mut pl = local_pl.lock().expect("Error in taking mut pl");
@@ -112,26 +138,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     }
                 });
             }
-
-            for _ in 0..num_of_nodes {
-                let (
-                    node,
-                    GeometricCentralityResult {
-                        closeness,
-                        harmonic,
-                        lin,
-                        exponential,
-                        reachable,
-                    },
-                ) = receive_from_thread
-                    .recv()
-                    .expect("Failed receiving from thread");
-                self.closeness[node] = closeness;
-                self.harmonic[node] = harmonic;
-                self.lin[node] = lin;
-                self.exponential[node] = exponential;
-                self.reachable[node] = reachable;
-            }
+            self.collect_results(num_of_nodes, receive_from_thread);
         });
         {
             let mut pl = shared_pl.lock().expect("Error in taking mut pl");
@@ -141,30 +148,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
     pub fn compute_with_atomic_counter_out_channel_generic_no_known<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
-        self.closeness = vec![-1f64; num_of_nodes];
-        self.harmonic = vec![-1f64; num_of_nodes];
-        self.lin = vec![-1f64; num_of_nodes];
-        self.exponential = vec![-1f64; num_of_nodes];
-        self.reachable = vec![0; num_of_nodes];
-        self.atomic_counter.reset();
-
-        let num_threads = min(self.graph.num_nodes(), self.num_of_threads);
-        pl.start(format!(
-            "Computing geometric centralities with {num_threads} threads..."
-        ));
-
-        pl.display_memory(true)
-            .item_name("visit")
-            .local_speed(true)
-            .expected_updates(Some(num_of_nodes));
-
-        let shared_pl = Arc::new(Mutex::new(pl));
-        let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
-        thread_pool_builder = thread_pool_builder.num_threads(num_threads);
-        let thread_pool = thread_pool_builder
-            .build()
-            .expect("Error in building thread pool");
-
+        let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
         let (send_out_of_thread, receive_from_thread) = unbounded();
         thread_pool.in_place_scope(|scope| {
             for i in 0..num_threads {
@@ -185,9 +169,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                         let centralities = Self::single_visit_generic_no_known(target_node, &mut bfs);
                         local_send_out_of_thread
                             .send((target_node, centralities))
-                            .expect(&format!(
-                                "Failed send out of thread {i} target_node: {target_node}"
-                            ));
+                            .unwrap_or_else(|_| panic!("Failed send out of thread {i} target_node: {target_node}"));
                         target_node = atom_counter.inc();
                         {
                             let mut pl = local_pl.lock().expect("Error in taking mut pl");
@@ -196,26 +178,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     }
                 });
             }
-
-            for _ in 0..num_of_nodes {
-                let (
-                    node,
-                    GeometricCentralityResult {
-                        closeness,
-                        harmonic,
-                        lin,
-                        exponential,
-                        reachable,
-                    },
-                ) = receive_from_thread
-                    .recv()
-                    .expect("Failed receiving from thread");
-                self.closeness[node] = closeness;
-                self.harmonic[node] = harmonic;
-                self.lin[node] = lin;
-                self.exponential[node] = exponential;
-                self.reachable[node] = reachable;
-            }
+            self.collect_results(num_of_nodes, receive_from_thread);
         });
         {
             let mut pl = shared_pl.lock().expect("Error in taking mut pl");
@@ -223,33 +186,9 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-
     pub fn compute_with_atomic_counter_out_channel<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
-        self.closeness = vec![-1f64; num_of_nodes];
-        self.harmonic = vec![-1f64; num_of_nodes];
-        self.lin = vec![-1f64; num_of_nodes];
-        self.exponential = vec![-1f64; num_of_nodes];
-        self.reachable = vec![0; num_of_nodes];
-        self.atomic_counter.reset();
-
-        let num_threads = min(self.graph.num_nodes(), self.num_of_threads);
-        pl.start(format!(
-            "Computing geometric centralities with {num_threads} threads..."
-        ));
-
-        pl.display_memory(true)
-            .item_name("visit")
-            .local_speed(true)
-            .expected_updates(Some(num_of_nodes));
-
-        let shared_pl = Arc::new(Mutex::new(pl));
-        let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
-        thread_pool_builder = thread_pool_builder.num_threads(num_threads);
-        let thread_pool = thread_pool_builder
-            .build()
-            .expect("Error in building thread pool");
-
+        let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
         let (send_out_of_thread, receive_from_thread) = unbounded();
         thread_pool.in_place_scope(|scope| {
             for i in 0..num_threads {
@@ -272,9 +211,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                         let centralities = Self::single_visit(graph, target_node, &mut queue, &mut distances);
                         local_send_out_of_thread
                             .send((target_node, centralities))
-                            .expect(&format!(
-                                "Failed send out of thread {i} target_node: {target_node}"
-                            ));
+                            .unwrap_or_else(|_| panic!("Failed send out of thread {i} target_node: {target_node}"));
                         target_node = atom_counter.inc();
                         {
                             let mut pl = local_pl.lock().expect("Error in taking mut pl");
@@ -283,26 +220,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     }
                 });
             }
-
-            for _ in 0..num_of_nodes {
-                let (
-                    node,
-                    GeometricCentralityResult {
-                        closeness,
-                        harmonic,
-                        lin,
-                        exponential,
-                        reachable,
-                    },
-                ) = receive_from_thread
-                    .recv()
-                    .expect("Failed receiving from thread");
-                self.closeness[node] = closeness;
-                self.harmonic[node] = harmonic;
-                self.lin[node] = lin;
-                self.exponential[node] = exponential;
-                self.reachable[node] = reachable;
-            }
+            self.collect_results(num_of_nodes, receive_from_thread);
         });
         {
             let mut pl = shared_pl.lock().expect("Error in taking mut pl");
@@ -426,7 +344,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         graph: &G,
         start: usize,
         queue: &mut VecDeque<usize>,
-        distances: &mut [i64]
+        distances: &mut [i64],
     ) -> GeometricCentralityResult {
         let mut closeness = 0f64;
         let mut harmonic = 0f64;
@@ -493,6 +411,46 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
+        centralities.compute_with_atomic_counter_out_channel(&mut Option::<ProgressLogger>::None);
+
+        assert_eq!(0f64, centralities.closeness[0]);
+        assert_eq!(1f64, centralities.closeness[1]);
+        assert_eq!(1f64 / 3f64, centralities.closeness[2]);
+
+        assert_eq!(1f64, centralities.lin[0]);
+        assert_eq!(4f64, centralities.lin[1]);
+        assert_eq!(3f64, centralities.lin[2]);
+
+        assert_eq!(0f64, centralities.harmonic[0]);
+        assert_eq!(1f64, centralities.harmonic[1]);
+        assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
+    }
+
+    #[test]
+    fn test_geom_atom_out_chan_generic() {
+        let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
+        let l = &Left(g);
+        let mut centralities = GeometricCentralities::new(&l, 0);
+        centralities.compute_with_atomic_counter_out_channel_generic(&mut Option::<ProgressLogger>::None);
+
+        assert_eq!(0f64, centralities.closeness[0]);
+        assert_eq!(1f64, centralities.closeness[1]);
+        assert_eq!(1f64 / 3f64, centralities.closeness[2]);
+
+        assert_eq!(1f64, centralities.lin[0]);
+        assert_eq!(4f64, centralities.lin[1]);
+        assert_eq!(3f64, centralities.lin[2]);
+
+        assert_eq!(0f64, centralities.harmonic[0]);
+        assert_eq!(1f64, centralities.harmonic[1]);
+        assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
+    }
+
+    #[test]
+    fn test_geom_atom_out_chan_generic_no_kown() {
+        let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
+        let l = &Left(g);
+        let mut centralities = GeometricCentralities::new(&l, 0);
         centralities.compute_with_atomic_counter_out_channel_generic_no_known(&mut Option::<ProgressLogger>::None);
 
         assert_eq!(0f64, centralities.closeness[0]);
@@ -507,44 +465,4 @@ mod tests {
         assert_eq!(1f64, centralities.harmonic[1]);
         assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
     }
-
-    /*
-    #[test]
-    fn test_geom_2_chan() {
-        let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
-        let l = &Left(g);
-        let mut centralities = GeometricCentralities::new(&l, 0, true);
-        centralities.compute_with_2_channels();
-        assert_eq!(0f64, centralities.closeness[0]);
-        assert_eq!(1f64, centralities.closeness[1]);
-        assert_eq!(1f64 / 3f64, centralities.closeness[2]);
-
-        assert_eq!(1f64, centralities.lin[0]);
-        assert_eq!(4f64, centralities.lin[1]);
-        assert_eq!(3f64, centralities.lin[2]);
-
-        assert_eq!(0f64, centralities.harmonic[0]);
-        assert_eq!(1f64, centralities.harmonic[1]);
-        assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
-    }
-
-    #[test]
-    fn test_geom_par_iter() {
-        let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
-        let l = &Left(g);
-        let mut centralities = GeometricCentralities::new(&l, 0, true);
-        centralities.compute_with_par_iter(2);
-        assert_eq!(0f64, centralities.results[0].closeness);
-        assert_eq!(1f64, centralities.results[1].closeness);
-        assert_eq!(1f64 / 3f64, centralities.results[2].closeness);
-
-        assert_eq!(1f64, centralities.results[0].lin);
-        assert_eq!(4f64, centralities.results[1].lin);
-        assert_eq!(3f64, centralities.results[2].lin);
-
-        assert_eq!(0f64, centralities.results[0].harmonic);
-        assert_eq!(1f64, centralities.results[1].harmonic);
-        assert_eq!(3f64 / 2f64, centralities.results[2].harmonic);
-    }
-     */
 }

@@ -281,9 +281,10 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let mut reachable: usize = 0;
 
         bfs.reset_no_rayon();
+
         bfs.visit(
             start,
-            |args| {
+            #[inline(always)] |args: EventPred| {
                 let base = DEFAULT_ALPHA;
                 match args {
                     EventPred::Init { root } => {

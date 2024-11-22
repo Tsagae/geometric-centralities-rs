@@ -12,7 +12,7 @@ use webgraph::traits::RandomAccessGraph;
 use webgraph_algo::prelude::breadth_first::{EventPred, Seq, SeqNoKnown};
 use webgraph_algo::traits::Sequential;
 
-const DEFAULT_ALPHA: f64 = 0.5;
+pub const DEFAULT_ALPHA: f64 = 0.5;
 
 #[derive(Clone, Debug)]
 pub struct GeometricCentralityResult {

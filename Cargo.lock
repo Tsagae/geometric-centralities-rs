@@ -641,13 +641,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "geometric-centralities-rs"
+name = "geometric_centralities_rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "atomic-counter",
  "clap",
  "common_traits 0.10.2",
+ "criterion",
  "crossbeam-channel",
  "dsi-progress-logger",
  "env_logger",

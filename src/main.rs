@@ -1,12 +1,8 @@
-use crate::geometric_centralities::GeometricCentralities;
 use clap::Parser;
 use dsi_progress_logger::ProgressLogger;
 use log::info;
 use webgraph::prelude::BvGraph;
-
-
-mod geometric_centralities;
-
+use geometric_centralities_rs::GeometricCentralities;
 
 #[derive(Parser, Debug)]
 #[command(about = "Benchmarks geometric centralities", long_about = None)]

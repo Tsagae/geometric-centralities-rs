@@ -1,4 +1,3 @@
-use webgraph_algo::prelude::breadth_first::SeqDistVec;
 use atomic_counter::AtomicCounter;
 use common_traits::Number;
 use crossbeam_channel::unbounded;
@@ -10,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use sux::bits::BitVec;
 use webgraph::traits::RandomAccessGraph;
+use webgraph_algo::prelude::breadth_first::SeqDistVec;
 use webgraph_algo::prelude::breadth_first::{EventPred, Seq, SeqNoKnown};
 use webgraph_algo::traits::Sequential;
 
@@ -348,7 +348,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     }
                 }
             },
-            &mut Option::<ProgressLogger>::None,
+            dsi_progress_logger::no_logging!(),
         )
             .expect("Error in bfs");
         if closeness == 0f64 {
@@ -404,7 +404,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     }
                 }
             },
-            &mut Option::<ProgressLogger>::None,
+            dsi_progress_logger::no_logging!(),
         )
             .expect("Error in bfs");
         if closeness == 0f64 {
@@ -459,7 +459,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     }
                 }
             },
-            &mut Option::<ProgressLogger>::None,
+            dsi_progress_logger::no_logging!(),
         )
             .expect("Error in bfs");
         if closeness == 0f64 {
@@ -598,7 +598,7 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute(&mut Option::<ProgressLogger>::None);
+        centralities.compute(dsi_progress_logger::no_logging!());
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);
@@ -618,7 +618,7 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute_generic(&mut Option::<ProgressLogger>::None);
+        centralities.compute_generic(dsi_progress_logger::no_logging!());
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);
@@ -638,7 +638,7 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute_generic_no_known(&mut Option::<ProgressLogger>::None);
+        centralities.compute_generic_no_known(dsi_progress_logger::no_logging!());
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);
@@ -658,7 +658,7 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute_generic_dist_vec(&mut Option::<ProgressLogger>::None);
+        centralities.compute_generic_dist_vec(dsi_progress_logger::no_logging!());
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);

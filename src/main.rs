@@ -11,22 +11,22 @@ mod geometric_centralities;
 #[derive(Parser, Debug)]
 #[command(about = "Benchmarks geometric centralities", long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(short = 'p', long)]
     path: String,
 
-    #[clap(long, short)]
+    #[clap(short = 'a', long)]
     all: bool,
 
-    #[clap(long, short)]
+    #[clap(short = 'g', long)]
     generic: bool,
 
-    #[clap(long, short)]
+    #[clap(short = 'k', long)]
     generic_no_known: bool,
 
-    #[clap(long, short)]
+    #[clap(short = 'n', long)]
     no_generic: bool,
 
-    #[clap(long, short)]
+    #[clap(short = 'd', long)]
     generic_dist_vec: bool,
 }
 

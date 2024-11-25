@@ -7,7 +7,7 @@
 use anyhow::Result;
 use clap::Parser;
 use common_traits::Number;
-use criterion::Criterion;
+use criterion::{black_box, Criterion};
 use dsi_progress_logger::ProgressLogger;
 use geometric_centralities_rs::geometric_centralities::{GeometricCentralityResult, DEFAULT_ALPHA};
 use std::collections::VecDeque;
@@ -31,11 +31,19 @@ struct Args {
 }
 
 pub fn main() -> Result<()> {
+    // i don't know why but i *always* get as last argumet "--bench" so i remove it
+    let mut raw_args = std::env::args().collect::<Vec<_>>();
+    // check if last argument is "--bench"
+    if raw_args.len() > 1 && raw_args[raw_args.len() - 1] == "--bench" {
+        // remove it
+        raw_args = raw_args[0..raw_args.len() - 1].to_vec();
+    }
+
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .try_init()?;
 
-    let mut args = Args::parse();
+    let args = Args::parse_from(raw_args);
 
     let graph = BvGraph::with_basename(&args.path)
         .load()
@@ -54,13 +62,13 @@ fn graph_wrapper(graph: &impl RandomAccessGraph, args: Args) {
     let mut distances = Vec::new();
     distances.resize(graph.num_nodes(), -1);
 
-    c.bench_function("non-generic-bfs", |_| {
-        single_visit(&graph, args.start_node, &mut VecDeque::new(), &mut distances);
+    c.bench_function("non-generic-bfs", |b| {
+        b.iter(|| black_box(single_visit(black_box(&graph), black_box(args.start_node), black_box(&mut VecDeque::new()), black_box(&mut distances))));
     });
 
     let mut bfs = Seq::new(graph);
-    c.bench_function("generic-bfs", |_| {
-        single_visit_generic(args.start_node, &mut bfs);
+    c.bench_function("generic-bfs", |b| {
+        b.iter(|| black_box(single_visit_generic(black_box(args.start_node), black_box(&mut bfs))));
     });
 
     c.final_summary();

@@ -16,3 +16,10 @@ env_logger = "0.11.5"
 log = "0.4.22"
 anyhow = "1.0.93"
 clap = { version = "4.5.20", features = ["derive"] }
+
+[profile.release]
+opt-level = 3             # like --release
+lto = "fat"               # Full LTO
+overflow-checks = false   # Disable integer overflow checks.
+debug-assertions = false  # Enables debug assertions.
+codegen-units = 1         # slower compile times, but maybe better perf

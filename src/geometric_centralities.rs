@@ -1,3 +1,4 @@
+use webgraph_algo::prelude::breadth_first::SeqDistVec;
 use atomic_counter::AtomicCounter;
 use common_traits::Number;
 use crossbeam_channel::unbounded;
@@ -107,7 +108,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    pub fn compute_with_atomic_counter_out_channel_generic<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+    pub fn compute_generic<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
         let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
         let (send_out_of_thread, receive_from_thread) = unbounded();
@@ -147,7 +148,47 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    pub fn compute_with_atomic_counter_out_channel_generic_no_known<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+    pub fn compute_generic_dist_vec<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+        let num_of_nodes = self.graph.num_nodes();
+        let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
+        let (send_out_of_thread, receive_from_thread) = unbounded();
+        thread_pool.in_place_scope(|scope| {
+            for i in 0..num_threads {
+                let local_send_out_of_thread = send_out_of_thread.clone();
+                let thread_atomic_counter = Arc::clone(&self.atomic_counter);
+                let num_of_nodes = self.graph.num_nodes();
+                let graph = self.graph;
+                let local_pl = Arc::clone(&shared_pl);
+                scope.spawn(move |_| {
+                    let mut bfs = SeqDistVec::new(graph);
+
+                    //println!("Started thread id: {:?}", thread::current().id());
+                    let atom_counter = thread_atomic_counter;
+                    let num_of_nodes = num_of_nodes;
+
+                    let mut target_node = atom_counter.inc();
+                    while target_node < num_of_nodes {
+                        let centralities = Self::single_visit_generic_dist_vec(target_node, &mut bfs);
+                        local_send_out_of_thread
+                            .send((target_node, centralities))
+                            .unwrap_or_else(|_| panic!("Failed send out of thread {i} target_node: {target_node}"));
+                        target_node = atom_counter.inc();
+                        {
+                            let mut pl = local_pl.lock().expect("Error in taking mut pl");
+                            pl.update();
+                        }
+                    }
+                });
+            }
+            self.collect_results(num_of_nodes, receive_from_thread);
+        });
+        {
+            let mut pl = shared_pl.lock().expect("Error in taking mut pl");
+            pl.done_with_count(num_of_nodes);
+        }
+    }
+
+    pub fn compute_generic_no_known<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
         let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
         let (send_out_of_thread, receive_from_thread) = unbounded();
@@ -187,7 +228,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    pub fn compute_with_atomic_counter_out_channel<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+    pub fn compute<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
         let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
         let (send_out_of_thread, receive_from_thread) = unbounded();
@@ -284,6 +325,62 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         bfs.visit(
             start,
             |args| {
+                let base = DEFAULT_ALPHA;
+                match args {
+                    EventPred::Init { root } => {
+                        eprintln!("starting from {root}");
+                        Ok::<(), ()>(())
+                    }
+                    EventPred::Known { .. } => Ok(()),
+                    EventPred::Unknown { distance, .. } => {
+                        let d = distance;
+                        reachable += 1;
+                        if d == 0 {
+                            //Skip first
+                            return Ok(());
+                        }
+                        let hd = 1f64 / d as f64;
+                        let ed = base.pow(d as f64);
+                        closeness += d as f64;
+                        harmonic += hd;
+                        exponential += ed;
+                        Ok(())
+                    }
+                }
+            },
+            &mut Option::<ProgressLogger>::None,
+        )
+            .expect("Error in bfs");
+        if closeness == 0f64 {
+            lin = 1f64;
+        } else {
+            closeness = 1f64 / closeness;
+            lin = reachable as f64 * reachable as f64 * closeness;
+        }
+        GeometricCentralityResult {
+            closeness,
+            harmonic,
+            lin,
+            exponential,
+            reachable,
+        }
+    }
+
+    fn single_visit_generic_dist_vec(
+        start: usize,
+        bfs: &mut SeqDistVec<&G>,
+    ) -> GeometricCentralityResult {
+        let mut closeness = 0f64;
+        let mut harmonic = 0f64;
+        let lin;
+        let mut exponential = 0f64;
+        let mut reachable: usize = 0;
+
+        bfs.reset();
+
+        bfs.visit(
+            start,
+            #[inline(always)] |args: EventPred| {
                 let base = DEFAULT_ALPHA;
                 match args {
                     EventPred::Init { root } => {
@@ -475,8 +572,8 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         GeometricCentralityResult {
             closeness,
             harmonic,
-            lin,
             exponential,
+            lin,
             reachable,
         }
     }
@@ -501,7 +598,7 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute_with_atomic_counter_out_channel(&mut Option::<ProgressLogger>::None);
+        centralities.compute(&mut Option::<ProgressLogger>::None);
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);
@@ -521,7 +618,7 @@ mod tests {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute_with_atomic_counter_out_channel_generic(&mut Option::<ProgressLogger>::None);
+        centralities.compute_generic(&mut Option::<ProgressLogger>::None);
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);
@@ -537,11 +634,31 @@ mod tests {
     }
 
     #[test]
-    fn test_geom_atom_out_chan_generic_no_kown() {
+    fn test_geom_atom_out_chan_generic_no_known() {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute_with_atomic_counter_out_channel_generic_no_known(&mut Option::<ProgressLogger>::None);
+        centralities.compute_generic_no_known(&mut Option::<ProgressLogger>::None);
+
+        assert_eq!(0f64, centralities.closeness[0]);
+        assert_eq!(1f64, centralities.closeness[1]);
+        assert_eq!(1f64 / 3f64, centralities.closeness[2]);
+
+        assert_eq!(1f64, centralities.lin[0]);
+        assert_eq!(4f64, centralities.lin[1]);
+        assert_eq!(3f64, centralities.lin[2]);
+
+        assert_eq!(0f64, centralities.harmonic[0]);
+        assert_eq!(1f64, centralities.harmonic[1]);
+        assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
+    }
+
+    #[test]
+    fn test_geom_atom_out_chan_generic_dist_vec() {
+        let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
+        let l = &Left(g);
+        let mut centralities = GeometricCentralities::new(&l, 0);
+        centralities.compute_generic_dist_vec(&mut Option::<ProgressLogger>::None);
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);

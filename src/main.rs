@@ -27,7 +27,7 @@ struct Args {
     no_generic: bool,
 
     #[clap(long, short)]
-    no_dist_vec: bool,
+    generic_dist_vec: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -43,22 +43,22 @@ fn main() -> anyhow::Result<()> {
 
     if args.all || args.generic {
         info!("-------------- Geom generic --------------");
-        geom.compute_with_atomic_counter_out_channel_generic(&mut ProgressLogger::default());
+        geom.compute_generic(&mut ProgressLogger::default());
     }
 
     if args.all || args.generic_no_known {
         info!("-------------- Geom generic no known --------------");
-        geom.compute_with_atomic_counter_out_channel_generic_no_known(&mut ProgressLogger::default());
+        geom.compute_generic_no_known(&mut ProgressLogger::default());
     }
 
-    if args.all || args.no_dist_vec {
-        info!("-------------- Geom no dist vec --------------");
-        geom.compute_with_atomic_counter_out_channel_no_dist_vec(&mut ProgressLogger::default());
+    if args.all || args.generic_dist_vec {
+        info!("-------------- Geom generic distance vector --------------");
+        geom.compute_generic_dist_vec(&mut ProgressLogger::default());
     }
 
     if args.all || args.no_generic {
         info!("-------------- Geom no generic --------------");
-        geom.compute_with_atomic_counter_out_channel(&mut ProgressLogger::default());
+        geom.compute(&mut ProgressLogger::default());
     }
 
     info!("Done");

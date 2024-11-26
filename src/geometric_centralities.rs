@@ -95,7 +95,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let reachable = self.reachable.as_sync_slice();
 
         thread_pool.in_place_scope(|scope| {
-            for i in 0..num_threads {
+            for _ in 0..num_threads {
                 let thread_atomic_counter = Arc::clone(&self.atomic_counter);
                 let num_of_nodes = self.graph.num_nodes();
                 let graph = self.graph;
@@ -138,14 +138,12 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let mut exponential = 0f64;
         let mut reachable: usize = 0;
 
-        bfs.reset_no_rayon();
+        bfs.reset();
         bfs.visit(
             start,
             |args| {
                 let base = DEFAULT_ALPHA; //TODO: add parametric base
                 match args {
-                    EventPred::Init { .. } => Ok::<(), ()>(()),
-                    EventPred::Known { .. } => Ok(()),
                     EventPred::Unknown { distance, .. } => {
                         let d = distance;
                         reachable += 1;
@@ -160,6 +158,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                         exponential += ed;
                         Ok(())
                     }
+                    _ => Ok::<(), ()>(()),
                 }
             },
             dsi_progress_logger::no_logging!(),

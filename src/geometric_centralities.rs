@@ -44,16 +44,19 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     num_of_threads
                 },
             ),
-            closeness: vec![],
-            harmonic: vec![],
-            lin: vec![],
-            exponential: vec![],
-            reachable: vec![],
+            closeness: Vec::new(),
+            harmonic: Vec::new(),
+            lin: Vec::new(),
+            exponential: Vec::new(),
+            reachable: Vec::new(),
             atomic_counter: Arc::new(atomic_counter::ConsistentCounter::new(0)),
         }
     }
 
-    fn init<'a, P: ProgressLog + Send + Sync>(&mut self, pl: &'a mut P) -> (Arc<Mutex<&'a mut P>>, ThreadPool, usize) {
+    fn init<'a, P: ProgressLog + Send + Sync>(
+        &mut self,
+        pl: &'a mut P,
+    ) -> (Arc<Mutex<&'a mut P>>, ThreadPool, usize) {
         let num_of_nodes = self.graph.num_nodes();
         self.closeness = vec![-1f64; num_of_nodes];
         self.harmonic = vec![-1f64; num_of_nodes];
@@ -81,7 +84,11 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         (shared_pl, thread_pool, num_threads)
     }
 
-    fn collect_results(&mut self, num_of_nodes: usize, receive_from_thread: crossbeam_channel::Receiver<(usize, GeometricCentralityResult)>) {
+    fn collect_results(
+        &mut self,
+        num_of_nodes: usize,
+        receive_from_thread: crossbeam_channel::Receiver<(usize, GeometricCentralityResult)>,
+    ) {
         for _ in 0..num_of_nodes {
             let (
                 node,
@@ -126,7 +133,9 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                         let centralities = Self::single_visit_generic(target_node, &mut bfs);
                         local_send_out_of_thread
                             .send((target_node, centralities))
-                            .unwrap_or_else(|_| panic!("Failed send out of thread {i} target_node: {target_node}"));
+                            .unwrap_or_else(|_| {
+                                panic!("Failed send out of thread {i} target_node: {target_node}")
+                            });
                         target_node = atom_counter.inc();
                         {
                             let mut pl = local_pl.lock().expect("Error in taking mut pl");
@@ -143,10 +152,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    fn single_visit_generic(
-        start: usize,
-        bfs: &mut Seq<&G>,
-    ) -> GeometricCentralityResult {
+    fn single_visit_generic(start: usize, bfs: &mut Seq<&G>) -> GeometricCentralityResult {
         let mut closeness = 0f64;
         let mut harmonic = 0f64;
         let lin;
@@ -157,12 +163,9 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         bfs.visit(
             start,
             |args| {
-                let base = DEFAULT_ALPHA;
+                let base = DEFAULT_ALPHA; //TODO: add parametric base
                 match args {
-                    EventPred::Init { root } => {
-                        eprintln!("starting from {root}");
-                        Ok::<(), ()>(())
-                    }
+                    EventPred::Init { .. } => Ok::<(), ()>(()),
                     EventPred::Known { .. } => Ok(()),
                     EventPred::Unknown { distance, .. } => {
                         let d = distance;
@@ -182,7 +185,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             },
             dsi_progress_logger::no_logging!(),
         )
-            .expect("Error in bfs");
+        .expect("Error in bfs");
         if closeness == 0f64 {
             lin = 1f64;
         } else {
@@ -199,7 +202,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::geometric_centralities::GeometricCentralities;
@@ -208,8 +210,8 @@ mod tests {
     use webgraph::prelude::VecGraph;
 
     fn transpose_arc_list(
-        arcs: impl IntoIterator<Item=(usize, usize)>,
-    ) -> impl IntoIterator<Item=(usize, usize)> {
+        arcs: impl IntoIterator<Item = (usize, usize)>,
+    ) -> impl IntoIterator<Item = (usize, usize)> {
         arcs.into_iter().map(|(a, b)| (b, a))
     }
 
@@ -248,7 +250,6 @@ mod tests {
         assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
     }
 
-
     #[test]
     fn test_cycle() {
         for size in [10, 50, 100] {
@@ -259,14 +260,16 @@ mod tests {
             let mut expected = Vec::new();
 
             expected.resize(size, 2. / (size as f64 * (size as f64 - 1.)));
-            (0..size).for_each(|i| assert_approx_eq!(expected[i], centralities.closeness[i], 1E-15f64));
+            (0..size)
+                .for_each(|i| assert_approx_eq!(expected[i], centralities.closeness[i], 1E-15f64));
 
             expected.fill(size as f64 * 2. / (size as f64 - 1.));
             (0..size).for_each(|i| assert_approx_eq!(expected[i], centralities.lin[i], 1E-15f64));
 
             let s = (1..size).fold(0f64, |acc, i| acc + 1. / (i as f64));
             expected.fill(s);
-            (0..size).for_each(|i| assert_approx_eq!(expected[i], centralities.harmonic[i], 1E-14f64));
-        };
+            (0..size)
+                .for_each(|i| assert_approx_eq!(expected[i], centralities.harmonic[i], 1E-14f64));
+        }
     }
 }

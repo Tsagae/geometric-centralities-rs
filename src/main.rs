@@ -4,9 +4,7 @@ use dsi_progress_logger::ProgressLogger;
 use log::info;
 use webgraph::prelude::BvGraph;
 
-
 mod geometric_centralities;
-
 
 #[derive(Parser, Debug)]
 #[command(about = "Benchmarks geometric centralities", long_about = None)]
@@ -28,7 +26,6 @@ fn main() -> anyhow::Result<()> {
 
     info!("-------------- Geom generic --------------");
     geom.compute_generic(&mut ProgressLogger::default());
-
 
     info!("Done");
 

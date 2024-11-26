@@ -1,16 +1,13 @@
 use atomic_counter::AtomicCounter;
 use common_traits::Number;
 use crossbeam_channel::unbounded;
-use dsi_progress_logger::{ProgressLog, ProgressLogger};
+use dsi_progress_logger::ProgressLog;
 use rayon::ThreadPool;
 use std::cmp::min;
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
-use sux::bits::BitVec;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::prelude::breadth_first::SeqDistVec;
-use webgraph_algo::prelude::breadth_first::{EventPred, Seq, SeqNoKnown};
+use webgraph_algo::prelude::breadth_first::{EventPred, Seq};
 use webgraph_algo::traits::Sequential;
 
 const DEFAULT_ALPHA: f64 = 0.5;
@@ -30,7 +27,6 @@ pub struct GeometricCentralities<'a, G: RandomAccessGraph> {
     pub lin: Vec<f64>,
     pub exponential: Vec<f64>,
     pub reachable: Vec<usize>,
-    pub results: Vec<GeometricCentralityResult>,
     graph: &'a G,
     num_of_threads: usize,
     atomic_counter: Arc<atomic_counter::ConsistentCounter>,
@@ -53,7 +49,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             lin: vec![],
             exponential: vec![],
             reachable: vec![],
-            results: vec![],
             atomic_counter: Arc::new(atomic_counter::ConsistentCounter::new(0)),
         }
     }
@@ -208,6 +203,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 #[cfg(test)]
 mod tests {
     use crate::geometric_centralities::GeometricCentralities;
+    use assert_approx_eq::assert_approx_eq;
     use webgraph::labels::Left;
     use webgraph::prelude::VecGraph;
 
@@ -215,6 +211,21 @@ mod tests {
         arcs: impl IntoIterator<Item=(usize, usize)>,
     ) -> impl IntoIterator<Item=(usize, usize)> {
         arcs.into_iter().map(|(a, b)| (b, a))
+    }
+
+    fn new_directed_cycle(num_nodes: usize) -> VecGraph {
+        let mut graph = VecGraph::new();
+        for i in 0..num_nodes {
+            graph.add_node(i);
+        }
+        for i in 0..num_nodes {
+            for j in 0..num_nodes {
+                if (i + 1) % num_nodes == j {
+                    graph.add_arc(i, j);
+                }
+            }
+        }
+        graph
     }
 
     #[test]
@@ -237,4 +248,25 @@ mod tests {
         assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
     }
 
+
+    #[test]
+    fn test_cycle() {
+        for size in [10, 50, 100] {
+            let graph = Left(new_directed_cycle(size));
+            let mut centralities = GeometricCentralities::new(&graph, 0);
+            centralities.compute_generic(dsi_progress_logger::no_logging!());
+
+            let mut expected = Vec::new();
+
+            expected.resize(size, 2. / (size as f64 * (size as f64 - 1.)));
+            (0..size).for_each(|i| assert_approx_eq!(expected[i], centralities.closeness[i], 1E-15f64));
+
+            expected.fill(size as f64 * 2. / (size as f64 - 1.));
+            (0..size).for_each(|i| assert_approx_eq!(expected[i], centralities.lin[i], 1E-15f64));
+
+            let s = (1..size).fold(0f64, |acc, i| acc + 1. / (i as f64));
+            expected.fill(s);
+            (0..size).for_each(|i| assert_approx_eq!(expected[i], centralities.harmonic[i], 1E-14f64));
+        };
+    }
 }

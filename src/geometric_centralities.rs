@@ -55,7 +55,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    pub fn compute_generic<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+    pub fn compute<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
         let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
 
@@ -81,7 +81,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
                     let mut target_node = atom_counter.inc();
                     while target_node < num_of_nodes {
-                        let centralities = Self::single_visit_generic(alpha, target_node, &mut bfs);
+                        let centralities = Self::single_visit_sequential(alpha, target_node, &mut bfs);
                         unsafe {
                             closeness[target_node].set(centralities.closeness);
                             harmonic[target_node].set(centralities.harmonic);
@@ -139,7 +139,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         (shared_pl, thread_pool, num_threads)
     }
 
-    fn single_visit_generic(
+    fn single_visit_sequential(
         alpha: f64,
         start: usize,
         bfs: &mut Seq<&G>,
@@ -221,11 +221,11 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_generic() {
+    fn test_compute() {
         let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
         let l = &Left(g);
         let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute_generic(dsi_progress_logger::no_logging!());
+        centralities.compute(dsi_progress_logger::no_logging!());
 
         assert_eq!(0f64, centralities.closeness[0]);
         assert_eq!(1f64, centralities.closeness[1]);
@@ -245,7 +245,7 @@ mod tests {
         for size in [10, 50, 100] {
             let graph = Left(new_directed_cycle(size));
             let mut centralities = GeometricCentralities::new(&graph, 0);
-            centralities.compute_generic(dsi_progress_logger::no_logging!());
+            centralities.compute(dsi_progress_logger::no_logging!());
 
             let mut expected = Vec::new();
 

@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     let mut geom = GeometricCentralities::new(&graph, 0);
 
     info!("-------------- Geom generic --------------");
-    geom.compute_generic(&mut ProgressLogger::default());
+    geom.compute(&mut ProgressLogger::default());
 
     info!("Done");
 

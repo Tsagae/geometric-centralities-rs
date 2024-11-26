@@ -1,12 +1,12 @@
 use atomic_counter::AtomicCounter;
 use common_traits::Number;
-use crossbeam_channel::unbounded;
 use dsi_progress_logger::ProgressLog;
 use rayon::ThreadPool;
 use std::cmp::min;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
+use webgraph::utils::SyncSlice;
 use webgraph_algo::prelude::breadth_first::{EventPred, Seq};
 use webgraph_algo::traits::Sequential;
 
@@ -84,46 +84,24 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         (shared_pl, thread_pool, num_threads)
     }
 
-    fn collect_results(
-        &mut self,
-        num_of_nodes: usize,
-        receive_from_thread: crossbeam_channel::Receiver<(usize, GeometricCentralityResult)>,
-    ) {
-        for _ in 0..num_of_nodes {
-            let (
-                node,
-                GeometricCentralityResult {
-                    closeness,
-                    harmonic,
-                    lin,
-                    exponential,
-                    reachable,
-                },
-            ) = receive_from_thread
-                .recv()
-                .expect("Failed receiving from thread");
-            self.closeness[node] = closeness;
-            self.harmonic[node] = harmonic;
-            self.lin[node] = lin;
-            self.exponential[node] = exponential;
-            self.reachable[node] = reachable;
-        }
-    }
-
     pub fn compute_generic<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
         let num_of_nodes = self.graph.num_nodes();
         let (shared_pl, thread_pool, num_threads) = self.init::<P>(pl);
-        let (send_out_of_thread, receive_from_thread) = unbounded();
+
+        let closeness = self.closeness.as_sync_slice();
+        let harmonic = self.harmonic.as_sync_slice();
+        let lin = self.lin.as_sync_slice();
+        let exponential = self.exponential.as_sync_slice();
+        let reachable = self.reachable.as_sync_slice();
+
         thread_pool.in_place_scope(|scope| {
             for i in 0..num_threads {
-                let local_send_out_of_thread = send_out_of_thread.clone();
                 let thread_atomic_counter = Arc::clone(&self.atomic_counter);
                 let num_of_nodes = self.graph.num_nodes();
                 let graph = self.graph;
                 let local_pl = Arc::clone(&shared_pl);
                 scope.spawn(move |_| {
                     let mut bfs = Seq::new(graph);
-
                     //println!("Started thread id: {:?}", thread::current().id());
                     let atom_counter = thread_atomic_counter;
                     let num_of_nodes = num_of_nodes;
@@ -131,11 +109,13 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     let mut target_node = atom_counter.inc();
                     while target_node < num_of_nodes {
                         let centralities = Self::single_visit_generic(target_node, &mut bfs);
-                        local_send_out_of_thread
-                            .send((target_node, centralities))
-                            .unwrap_or_else(|_| {
-                                panic!("Failed send out of thread {i} target_node: {target_node}")
-                            });
+                        unsafe {
+                            closeness[target_node].set(centralities.closeness);
+                            harmonic[target_node].set(centralities.harmonic);
+                            lin[target_node].set(centralities.lin);
+                            exponential[target_node].set(centralities.exponential);
+                            reachable[target_node].set(centralities.reachable);
+                        }
                         target_node = atom_counter.inc();
                         {
                             let mut pl = local_pl.lock().expect("Error in taking mut pl");
@@ -144,7 +124,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     }
                 });
             }
-            self.collect_results(num_of_nodes, receive_from_thread);
         });
         {
             let mut pl = shared_pl.lock().expect("Error in taking mut pl");

@@ -1,3 +1,5 @@
+extern crate core;
+
 use crate::geometric_centralities::GeometricCentralities;
 use clap::Parser;
 use dsi_progress_logger::ProgressLogger;

@@ -1989,8 +1989,8 @@ dependencies = [
 
 [[package]]
 name = "webgraph"
-version = "0.1.4"
-source = "git+https://github.com/vigna/webgraph-rs.git#48db29e77cbeda4c191ef677f57a0ac8b4b67357"
+version = "0.2.0"
+source = "git+https://github.com/vigna/webgraph-rs.git#0b5988aa4e6c1ed935b581bb2acd4519c381c80f"
 dependencies = [
  "anyhow",
  "bitflags 2.6.0",

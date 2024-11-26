@@ -13,21 +13,6 @@ mod geometric_centralities;
 struct Args {
     #[arg(short = 'p', long)]
     path: String,
-
-    #[clap(short = 'a', long)]
-    all: bool,
-
-    #[clap(short = 'g', long)]
-    generic: bool,
-
-    #[clap(short = 'k', long)]
-    generic_no_known: bool,
-
-    #[clap(short = 'n', long)]
-    no_generic: bool,
-
-    #[clap(short = 'd', long)]
-    generic_dist_vec: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -41,25 +26,9 @@ fn main() -> anyhow::Result<()> {
         .expect("Failed loading graph");
     let mut geom = GeometricCentralities::new(&graph, 0);
 
-    if args.all || args.generic {
-        info!("-------------- Geom generic --------------");
-        geom.compute_generic(&mut ProgressLogger::default());
-    }
+    info!("-------------- Geom generic --------------");
+    geom.compute_generic(&mut ProgressLogger::default());
 
-    if args.all || args.generic_no_known {
-        info!("-------------- Geom generic no known --------------");
-        geom.compute_generic_no_known(&mut ProgressLogger::default());
-    }
-
-    if args.all || args.generic_dist_vec {
-        info!("-------------- Geom generic distance vector --------------");
-        geom.compute_generic_dist_vec(&mut ProgressLogger::default());
-    }
-
-    if args.all || args.no_generic {
-        info!("-------------- Geom no generic --------------");
-        geom.compute(&mut ProgressLogger::default());
-    }
 
     info!("Done");
 

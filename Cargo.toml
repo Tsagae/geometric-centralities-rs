@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-webgraph = { git = "https://github.com/vigna/webgraph-rs.git" }
+webgraph = { path = "../webgraph-rs" }
 webgraph-algo = { path = "../webgraph-algo-rs" }
 dsi-progress-logger = "0.2.4"
 crossbeam-channel = "0.5.13"
@@ -16,6 +16,7 @@ log = "0.4.22"
 anyhow = "1.0.93"
 clap = { version = "4.5.20", features = ["derive"] }
 assert_approx_eq = "1.1.0"
+sync-cell-slice = "0.9.11"
 
 [profile.release]
 opt-level = 3             # like --release

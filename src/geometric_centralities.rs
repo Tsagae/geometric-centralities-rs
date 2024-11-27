@@ -1,6 +1,6 @@
 use atomic_counter::AtomicCounter;
 use common_traits::Number;
-use dsi_progress_logger::ProgressLog;
+use dsi_progress_logger::{no_logging, progress_logger, ProgressLog};
 use rayon::ThreadPool;
 use std::cmp::min;
 use std::sync::{Arc, Mutex};
@@ -111,10 +111,61 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         pl: &mut P,
         granularity: usize,
     ) -> GeometricCentralityResult {
-        let (_, thread_pool, _) = self.init::<P>(pl);
+        let num_of_nodes = self.graph.num_nodes();
+
+        let num_threads = min(self.graph.num_nodes(), self.num_of_threads);
+        pl.start(format!(
+            "Computing geometric centralities only on node {start_node} with {num_threads} threads..."
+        ));
+
+        pl.display_memory(true)
+            .item_name("node")
+            .local_speed(true)
+            .expected_updates(Some(num_of_nodes));
+
+        let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
+        thread_pool_builder = thread_pool_builder.num_threads(num_threads);
+        let thread_pool = thread_pool_builder
+            .build()
+            .expect("Error in building thread pool");
+
         let mut bfs =
             webgraph_algo::algo::visits::breadth_first::ParFairBase::new(self.graph, granularity);
         Self::single_visit_parallel(self.alpha, start_node, &mut bfs, &thread_pool, pl)
+    }
+
+    pub fn compute_all_single_node<P: ProgressLog + Send + Sync>(
+        &mut self,
+        pl: &mut P,
+        granularity: usize,
+    ) -> Vec<GeometricCentralityResult> {
+        let num_of_nodes = self.graph.num_nodes();
+
+        let num_threads = min(self.graph.num_nodes(), self.num_of_threads);
+        pl.start(format!(
+            "Computing geometric centralities on all nodes with parallel bfs with {num_threads} threads..."
+        ));
+
+        pl.display_memory(true)
+            .item_name("visit")
+            .local_speed(true)
+            .expected_updates(Some(num_of_nodes));
+
+        let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
+        thread_pool_builder = thread_pool_builder.num_threads(num_threads);
+        let thread_pool = thread_pool_builder
+            .build()
+            .expect("Error in building thread pool");
+
+        let mut bfs =
+            webgraph_algo::algo::visits::breadth_first::ParFairBase::new(self.graph, granularity);
+        let mut results = Vec::with_capacity(self.num_of_threads);
+        for node in 0..num_of_nodes {
+            let result = Self::single_visit_parallel(self.alpha, node, &mut bfs, &thread_pool, no_logging!());
+            results.push(result);
+            pl.update();
+        }
+        results
     }
 
     pub fn set_alpha(&mut self, alpha: f64) {

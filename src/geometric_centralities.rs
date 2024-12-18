@@ -1,6 +1,6 @@
 use atomic_counter::AtomicCounter;
 use common_traits::{Atomic, AtomicF64, AtomicNumber, Number};
-use dsi_progress_logger::{no_logging, ProgressLog};
+use dsi_progress_logger::{no_logging, ProgressLog, ProgressLogger};
 use rayon::ThreadPool;
 use std::cmp::min;
 use std::sync::atomic::AtomicUsize;
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::prelude::breadth_first::{EventPred, Seq};
+use webgraph_algo::prelude::breadth_first::{EventPred, ParFairBase, Seq};
 use webgraph_algo::traits::{Parallel, Sequential};
 
 const DEFAULT_ALPHA: f64 = 0.5;
@@ -130,8 +130,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             .build()
             .expect("Error in building thread pool");
 
-        let mut bfs =
-            webgraph_algo::algo::visits::breadth_first::ParFairBase::new(self.graph, granularity);
+        let mut bfs = ParFairBase::new(self.graph, granularity);
         Self::single_visit_parallel(self.alpha, start_node, &mut bfs, &thread_pool, pl)
     }
 
@@ -139,6 +138,13 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         &mut self,
         pl: &mut P,
         granularity: usize,
+        mut single_visit_func: impl FnMut(
+            f64,
+            usize,
+            &mut ParFairBase<&G, true>,
+            &ThreadPool,
+            &mut Option<ProgressLogger>,
+        ) -> GeometricCentralityResult,
     ) -> Vec<GeometricCentralityResult> {
         let num_of_nodes = self.graph.num_nodes();
 
@@ -158,17 +164,10 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             .build()
             .expect("Error in building thread pool");
 
-        let mut bfs =
-            webgraph_algo::algo::visits::breadth_first::ParFairBase::new(self.graph, granularity);
+        let mut bfs = ParFairBase::new(self.graph, granularity);
         let mut results = Vec::with_capacity(self.num_of_threads);
         for node in 0..num_of_nodes {
-            let result = Self::single_visit_parallel(
-                self.alpha,
-                node,
-                &mut bfs,
-                &thread_pool,
-                no_logging!(),
-            );
+            let result = single_visit_func(self.alpha, node, &mut bfs, &thread_pool, no_logging!());
             results.push(result);
             pl.update();
         }
@@ -263,10 +262,10 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    fn single_visit_parallel(
+    pub fn single_visit_parallel(
         alpha: f64,
         start: usize,
-        visit: &mut impl Parallel<EventPred>,
+        visit: &mut ParFairBase<&G, true>,
         thread_pool: &ThreadPool,
         pl: &mut impl ProgressLog,
     ) -> GeometricCentralityResult {
@@ -330,10 +329,10 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    fn single_visit_parallel_atomics(
+    pub fn single_visit_parallel_atomics(
         alpha: f64,
         start: usize,
-        visit: &mut impl Parallel<EventPred>,
+        visit: &mut ParFairBase<&G, true>,
         thread_pool: &ThreadPool,
         pl: &mut impl ProgressLog,
     ) -> GeometricCentralityResult {

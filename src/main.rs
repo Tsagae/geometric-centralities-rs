@@ -5,7 +5,6 @@ use clap::Parser;
 use dsi_progress_logger::ProgressLogger;
 use log::info;
 use webgraph::prelude::BvGraph;
-use webgraph::traits::SequentialLabeling;
 
 mod geometric_centralities;
 
@@ -14,9 +13,6 @@ mod geometric_centralities;
 struct Args {
     #[arg(short = 'p', long)]
     path: String,
-
-    #[arg(short = 'a', long)]
-    all_single_node: bool,
 
     #[arg(short = 'g', long, default_value = "100")]
     granularity: usize,
@@ -33,13 +29,22 @@ fn main() -> anyhow::Result<()> {
         .expect("Failed loading graph");
     let mut geom = GeometricCentralities::new(&graph, 0);
 
-    info!("-------------- Geom generic --------------");
-    geom.compute(&mut ProgressLogger::default());
+    //info!("-------------- Geom generic --------------");
+    //geom.compute(&mut ProgressLogger::default());
 
-    if args.all_single_node {
-        info!("-------------- Geom single node --------------");
-        geom.compute_all_single_node(&mut ProgressLogger::default(), args.granularity);
-    }
+    info!("-------------- Geom parallel visit --------------");
+    geom.compute_all_single_node(
+        &mut ProgressLogger::default(),
+        args.granularity,
+        GeometricCentralities::single_visit_parallel,
+    );
+
+    info!("-------------- Geom parallel visit atomics --------------");
+    geom.compute_all_single_node(
+        &mut ProgressLogger::default(),
+        args.granularity,
+        GeometricCentralities::single_visit_parallel_atomics,
+    );
 
     info!("Done");
 

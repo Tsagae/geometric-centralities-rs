@@ -1,8 +1,9 @@
 use atomic_counter::AtomicCounter;
-use common_traits::Number;
-use dsi_progress_logger::{no_logging, progress_logger, ProgressLog};
+use common_traits::{Atomic, AtomicF64, AtomicNumber, Number};
+use dsi_progress_logger::{no_logging, ProgressLog};
 use rayon::ThreadPool;
 use std::cmp::min;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
@@ -161,7 +162,13 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             webgraph_algo::algo::visits::breadth_first::ParFairBase::new(self.graph, granularity);
         let mut results = Vec::with_capacity(self.num_of_threads);
         for node in 0..num_of_nodes {
-            let result = Self::single_visit_parallel(self.alpha, node, &mut bfs, &thread_pool, no_logging!());
+            let result = Self::single_visit_parallel(
+                self.alpha,
+                node,
+                &mut bfs,
+                &thread_pool,
+                no_logging!(),
+            );
             results.push(result);
             pl.update();
         }
@@ -237,7 +244,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     _ => Ok::<(), ()>(()),
                 }
             },
-            dsi_progress_logger::no_logging!(),
+            no_logging!(),
         )
         .expect("Error in bfs");
 
@@ -306,6 +313,71 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                 .expect("Error in bfs");
             drop(sender);
         });
+
+        if closeness == 0f64 {
+            lin = 1f64;
+        } else {
+            closeness = 1f64 / closeness;
+            lin = reachable as f64 * reachable as f64 * closeness;
+        }
+
+        GeometricCentralityResult {
+            closeness,
+            harmonic,
+            lin,
+            exponential,
+            reachable,
+        }
+    }
+
+    fn single_visit_parallel_atomics(
+        alpha: f64,
+        start: usize,
+        visit: &mut impl Parallel<EventPred>,
+        thread_pool: &ThreadPool,
+        pl: &mut impl ProgressLog,
+    ) -> GeometricCentralityResult {
+        let atomic_closeness = AtomicF64::new(0f64);
+        let atomic_harmonic = AtomicF64::new(0f64);
+        let atomic_exponential = AtomicF64::new(0f64);
+        let atomic_reachable = AtomicUsize::new(0);
+
+        let base = alpha;
+        visit.reset();
+
+        thread_pool.in_place_scope(|scope| {
+            visit
+                .par_visit(
+                    start,
+                    |args| match args {
+                        EventPred::Unknown { distance, .. } => {
+                            let d = distance;
+                            atomic_reachable.fetch_add(d, std::sync::atomic::Ordering::Relaxed);
+                            if d == 0 {
+                                //Skip first
+                                return Ok(());
+                            }
+                            let hd = 1f64 / d as f64;
+                            let ed = base.pow(d as f64);
+                            atomic_closeness
+                                .fetch_add(d as f64, std::sync::atomic::Ordering::Relaxed);
+                            atomic_harmonic.fetch_add(hd, std::sync::atomic::Ordering::Relaxed);
+                            atomic_exponential.fetch_add(ed, std::sync::atomic::Ordering::Relaxed);
+                            Ok(())
+                        }
+                        _ => Ok::<(), ()>(()),
+                    },
+                    thread_pool,
+                    pl,
+                )
+                .expect("Error in bfs");
+        });
+
+        let mut closeness = atomic_closeness.load(std::sync::atomic::Ordering::SeqCst);
+        let harmonic = atomic_harmonic.load(std::sync::atomic::Ordering::SeqCst);
+        let lin;
+        let exponential = atomic_exponential.load(std::sync::atomic::Ordering::SeqCst);
+        let reachable = atomic_reachable.load(std::sync::atomic::Ordering::SeqCst);
 
         if closeness == 0f64 {
             lin = 1f64;

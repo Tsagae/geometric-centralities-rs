@@ -271,7 +271,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
     ) -> GeometricCentralityResult {
         let mut closeness = 0f64;
         let mut harmonic = 0f64;
-        let mut lin;
+        let lin;
         let mut exponential = 0f64;
         let mut reachable: usize = 0;
 

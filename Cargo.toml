@@ -17,6 +17,7 @@ anyhow = "1.0.93"
 clap = { version = "4.5.20", features = ["derive"] }
 assert_approx_eq = "1.1.0"
 sync-cell-slice = "0.9.11"
+atomic_float = "1.1.0"
 
 [profile.release]
 opt-level = 3             # like --release

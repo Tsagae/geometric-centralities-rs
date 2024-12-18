@@ -1,11 +1,13 @@
 use atomic_counter::AtomicCounter;
-use common_traits::{Atomic, AtomicF64, AtomicNumber, Number};
+use common_traits::{Atomic, AtomicNumber, Number};
 use dsi_progress_logger::{no_logging, ProgressLog, ProgressLogger};
 use rayon::ThreadPool;
 use std::cmp::min;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering::Relaxed;
 use std::thread::available_parallelism;
+use atomic_float::AtomicF64;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
 use webgraph_algo::prelude::breadth_first::{EventPred, ParFairBase, Seq};
@@ -171,6 +173,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             results.push(result);
             pl.update();
         }
+        pl.done_with_count(num_of_nodes);
         results
     }
 
@@ -336,7 +339,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         thread_pool: &ThreadPool,
         pl: &mut impl ProgressLog,
     ) -> GeometricCentralityResult {
-        let atomic_closeness = AtomicF64::new(0f64);
+        let atomic_closeness = AtomicUsize::new(0);
         let atomic_harmonic = AtomicF64::new(0f64);
         let atomic_exponential = AtomicF64::new(0f64);
         let atomic_reachable = AtomicUsize::new(0);
@@ -344,39 +347,36 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let base = alpha;
         visit.reset();
 
-        thread_pool.in_place_scope(|scope| {
-            visit
-                .par_visit(
-                    start,
-                    |args| match args {
-                        EventPred::Unknown { distance, .. } => {
-                            let d = distance;
-                            atomic_reachable.fetch_add(d, std::sync::atomic::Ordering::Relaxed);
-                            if d == 0 {
-                                //Skip first
-                                return Ok(());
-                            }
-                            let hd = 1f64 / d as f64;
-                            let ed = base.pow(d as f64);
-                            atomic_closeness
-                                .fetch_add(d as f64, std::sync::atomic::Ordering::Relaxed);
-                            atomic_harmonic.fetch_add(hd, std::sync::atomic::Ordering::Relaxed);
-                            atomic_exponential.fetch_add(ed, std::sync::atomic::Ordering::Relaxed);
-                            Ok(())
+        visit
+            .par_visit(
+                start,
+                |args| match args {
+                    EventPred::Unknown { distance, .. } => {
+                        let d = distance;
+                        atomic_reachable.fetch_add(1, Relaxed);
+                        if d == 0 {
+                            //Skip first
+                            return Ok(());
                         }
-                        _ => Ok::<(), ()>(()),
-                    },
-                    thread_pool,
-                    pl,
-                )
-                .expect("Error in bfs");
-        });
+                        let hd = 1f64 / d as f64;
+                        let ed = base.pow(d as f64);
+                        atomic_closeness.fetch_add(d, Relaxed);
+                        atomic_harmonic.fetch_add(hd, Relaxed);
+                        atomic_exponential.fetch_add(ed, Relaxed);
+                        Ok(())
+                    }
+                    _ => Ok::<(), ()>(()),
+                },
+                thread_pool,
+                pl,
+            )
+            .expect("Error in bfs");
 
-        let mut closeness = atomic_closeness.load(std::sync::atomic::Ordering::SeqCst);
-        let harmonic = atomic_harmonic.load(std::sync::atomic::Ordering::SeqCst);
+        let mut closeness = atomic_closeness.load(Relaxed) as f64;
+        let harmonic = atomic_harmonic.load(Relaxed);
         let lin;
-        let exponential = atomic_exponential.load(std::sync::atomic::Ordering::SeqCst);
-        let reachable = atomic_reachable.load(std::sync::atomic::Ordering::SeqCst);
+        let exponential = atomic_exponential.load(Relaxed);
+        let reachable = atomic_reachable.load(Relaxed);
 
         if closeness == 0f64 {
             lin = 1f64;

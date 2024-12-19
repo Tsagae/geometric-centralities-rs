@@ -1,8 +1,11 @@
 use atomic_counter::AtomicCounter;
-use common_traits::Number;
-use dsi_progress_logger::{no_logging, progress_logger, ProgressLog};
+use atomic_float::AtomicF64;
+use common_traits::{Atomic, AtomicNumber, Number};
+use dsi_progress_logger::{no_logging, ProgressLog};
 use rayon::ThreadPool;
 use std::cmp::min;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
@@ -75,7 +78,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
                 scope.spawn(move |_| {
                     let mut bfs = Seq::new(graph);
-                    //println!("Started thread id: {:?}", thread::current().id());
                     let atom_counter = thread_atomic_counter;
                     let num_of_nodes = num_of_nodes;
 
@@ -161,10 +163,17 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             webgraph_algo::algo::visits::breadth_first::ParFairBase::new(self.graph, granularity);
         let mut results = Vec::with_capacity(self.num_of_threads);
         for node in 0..num_of_nodes {
-            let result = Self::single_visit_parallel(self.alpha, node, &mut bfs, &thread_pool, no_logging!());
+            let result = Self::single_visit_parallel(
+                self.alpha,
+                node,
+                &mut bfs,
+                &thread_pool,
+                no_logging!(),
+            );
             results.push(result);
             pl.update();
         }
+        pl.done_with_count(num_of_nodes);
         results
     }
 
@@ -263,49 +272,44 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         thread_pool: &ThreadPool,
         pl: &mut impl ProgressLog,
     ) -> GeometricCentralityResult {
-        let mut closeness = 0f64;
-        let mut harmonic = 0f64;
-        let mut lin;
-        let mut exponential = 0f64;
-        let mut reachable: usize = 0;
-
-        let (sender, receiver) = crossbeam_channel::unbounded();
+        let atomic_closeness = AtomicUsize::new(0);
+        let atomic_harmonic = AtomicF64::new(0f64);
+        let atomic_exponential = AtomicF64::new(0f64);
+        let atomic_reachable = AtomicUsize::new(0);
 
         let base = alpha;
         visit.reset();
 
-        thread_pool.in_place_scope(|scope| {
-            scope.spawn(|_| {
-                for distance in receiver {
-                    let d = distance;
-                    reachable += 1;
-                    if d == 0 {
-                        //Skip first
-                        continue;
-                    }
-                    let hd = 1f64 / d as f64;
-                    let ed = base.pow(d as f64);
-                    closeness += d as f64;
-                    harmonic += hd;
-                    exponential += ed;
-                }
-            });
-            visit
-                .par_visit(
-                    start,
-                    |args| match args {
-                        EventPred::Unknown { distance, .. } => {
-                            sender.send(distance).expect("Failed sending distance");
-                            Ok(())
+        visit
+            .par_visit(
+                start,
+                |args| match args {
+                    EventPred::Unknown { distance, .. } => {
+                        let d = distance;
+                        atomic_reachable.fetch_add(1, Relaxed);
+                        if d == 0 {
+                            //Skip first
+                            return Ok(());
                         }
-                        _ => Ok::<(), ()>(()),
-                    },
-                    thread_pool,
-                    pl,
-                )
-                .expect("Error in bfs");
-            drop(sender);
-        });
+                        let hd = 1f64 / d as f64;
+                        let ed = base.pow(d as f64);
+                        atomic_closeness.fetch_add(d, Relaxed);
+                        atomic_harmonic.fetch_add(hd, Relaxed);
+                        atomic_exponential.fetch_add(ed, Relaxed);
+                        Ok(())
+                    }
+                    _ => Ok::<(), ()>(()),
+                },
+                thread_pool,
+                pl,
+            )
+            .expect("Error in bfs");
+
+        let mut closeness = atomic_closeness.load(SeqCst) as f64;
+        let harmonic = atomic_harmonic.load(SeqCst);
+        let lin;
+        let exponential = atomic_exponential.load(SeqCst);
+        let reachable = atomic_reachable.load(SeqCst);
 
         if closeness == 0f64 {
             lin = 1f64;
@@ -416,7 +420,7 @@ mod tests {
             let results = centralities.compute_single_node(
                 node,
                 &mut dsi_progress_logger::ProgressLogger::default(),
-                10,
+                1,
             );
             closeness[node] = results.closeness;
             harmonic[node] = results.harmonic;

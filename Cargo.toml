@@ -1,5 +1,5 @@
 [package]
-name = "geometric-centralities-rs"
+name = "geometric-centralities"
 version = "0.1.0"
 edition = "2021"
 
@@ -24,3 +24,6 @@ lto = "fat"               # Full LTO
 overflow-checks = false   # Disable integer overflow checks.
 debug-assertions = false  # Enables debug assertions.
 codegen-units = 1         # slower compile times, but maybe better perf
+
+[[example]]
+name = "bench_geometric_centralities"

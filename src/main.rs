@@ -12,6 +12,9 @@ use webgraph::prelude::BvGraph;
 struct MainArgs {
     #[arg(short = 'p', long)]
     path: String,
+
+    #[arg(long)]
+    parallel: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -36,7 +39,13 @@ fn main() -> anyhow::Result<()> {
         .expect("Failed loading graph");
     let mut geom = GeometricCentralities::new(&graph, 0);
 
-    geom.compute(&mut ProgressLogger::default());
+    if args.parallel {
+        println!("Computing with parallel visit");
+        geom.compute_all_par_visit(&mut ProgressLogger::default(), 100);
+    } else {
+        println!("Computing with sequential visit");
+        geom.compute(&mut ProgressLogger::default());
+    }
 
     write_nums_to_file(&results_dir, "closeness", geom.closeness.iter());
     write_nums_to_file(&results_dir, "lin", geom.lin.iter());

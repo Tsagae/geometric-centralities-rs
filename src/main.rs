@@ -15,6 +15,12 @@ struct MainArgs {
 
     #[arg(long)]
     parallel: bool,
+
+    #[arg(short = 't', long, default_value = "0")]
+    threads: usize,
+
+    #[arg(short = 'g', long, default_value = "100")]
+    granularity: usize,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -37,11 +43,21 @@ fn main() -> anyhow::Result<()> {
     let graph = BvGraph::with_basename(args.path)
         .load()
         .expect("Failed loading graph");
-    let mut geom = GeometricCentralities::new(&graph, 0);
+    let mut geom = GeometricCentralities::new(&graph, args.threads);
+
+    /*
+    let start_node = 10000;
+    let res = geom.compute_single_node_par_visit(
+        start_node,
+        &mut ProgressLogger::default(),
+        args.granularity,
+    );
+    println!("reachable[{start_node}]: {}", res.reachable);
+    */
 
     if args.parallel {
         println!("Computing with parallel visit");
-        geom.compute_all_par_visit(&mut ProgressLogger::default(), 100);
+        geom.compute_all_par_visit(&mut ProgressLogger::default(), args.granularity);
     } else {
         println!("Computing with sequential visit");
         geom.compute(&mut ProgressLogger::default());

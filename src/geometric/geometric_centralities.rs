@@ -1,11 +1,10 @@
 use atomic_counter::AtomicCounter;
-use common_traits::{Atomic, AtomicF64, AtomicNumber, Number};
+use common_traits::Number;
 use dsi_progress_logger::ProgressLog;
 use no_break::NoBreak;
+use openmp_reducer::{Reducer, SharedReducer};
 use rayon::ThreadPool;
 use std::ops::ControlFlow::Continue;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
@@ -35,6 +34,20 @@ pub struct GeometricCentralities<'a, G: RandomAccessGraph> {
     pub exponential: Vec<f64>,
     pub reachable: Vec<usize>,
     alpha: f64,
+}
+
+#[derive(Clone)]
+struct ReducerCollection<'a> {
+    closeness: SharedReducer<'a, usize, usize>,
+    harmonic: SharedReducer<'a, f64, f64>,
+    exponential: SharedReducer<'a, f64, f64>,
+    reachable: SharedReducer<'a, usize, usize>,
+}
+
+impl Drop for ReducerCollection<'_> {
+    fn drop(&mut self) {
+        //println!("dropping shared reducer!");
+    }
 }
 
 impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
@@ -260,28 +273,37 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let base = alpha;
         visit.reset();
 
-        let atomic_closeness = AtomicUsize::new(0);
-        let atomic_harmonic = AtomicF64::new(0f64);
-        let atomic_exponential = AtomicF64::new(0f64);
-        let atomic_reachable = AtomicUsize::new(0);
+        let usize_reducer_func = |global: &mut usize, local: &usize| *global += *local;
+        let float_reducer_func = |global: &mut f64, local: &f64| *global += *local;
+
+        let closeness_reducer = Reducer::<usize>::new(0, usize_reducer_func);
+        let harmonic_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
+        let exponential_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
+        let reachable_reducer = Reducer::<usize>::new(0, usize_reducer_func);
 
         visit
-            .par_visit(
+            .par_visit_with(
                 [start],
-                |event| {
+                ReducerCollection {
+                    closeness: closeness_reducer.share(),
+                    harmonic: harmonic_reducer.share(),
+                    exponential: exponential_reducer.share(),
+                    reachable: reachable_reducer.share(),
+                },
+                |cloned_reducer_collection, event| {
                     match event {
                         EventNoPred::Unknown { distance, .. } => {
                             let d = distance;
-                            atomic_reachable.fetch_add(1, Relaxed);
+                            *cloned_reducer_collection.reachable.as_mut() += 1;
                             if d == 0 {
                                 //Skip first
                                 return Continue(());
                             }
                             let hd = 1f64 / d as f64;
                             let ed = base.pow(d as f64);
-                            atomic_closeness.fetch_add(d, Relaxed);
-                            atomic_harmonic.fetch_add(hd, Relaxed);
-                            atomic_exponential.fetch_add(ed, Relaxed);
+                            *cloned_reducer_collection.closeness.as_mut() += d;
+                            *cloned_reducer_collection.harmonic.as_mut() += hd;
+                            *cloned_reducer_collection.exponential.as_mut() += ed;
                         }
                         _ => {}
                     }
@@ -291,11 +313,11 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             )
             .continue_value_no_break();
 
-        let mut closeness = atomic_closeness.load(SeqCst) as f64;
-        let harmonic = atomic_harmonic.load(SeqCst);
+        let mut closeness = closeness_reducer.get() as f64;
+        let harmonic = harmonic_reducer.get();
         let lin;
-        let exponential = atomic_exponential.load(SeqCst);
-        let reachable = atomic_reachable.load(SeqCst);
+        let exponential = exponential_reducer.get();
+        let reachable = reachable_reducer.get();
 
         if closeness == 0f64 {
             lin = 1f64;

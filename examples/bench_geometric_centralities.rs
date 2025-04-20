@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<()> {
 
     if args.all_single_node {
         info!("-------------- Geom single node --------------");
-        geom.compute_all_single_node(&mut ProgressLogger::default(), args.granularity);
+        //geom.compute_all_single_node(&mut ProgressLogger::default(), args.granularity);
     }
 
     info!("Done");

@@ -1,16 +1,16 @@
 use atomic_counter::AtomicCounter;
-use atomic_float::AtomicF64;
 use common_traits::Number;
-use dsi_progress_logger::{no_logging, ProgressLog};
+use dsi_progress_logger::ProgressLog;
+use no_break::NoBreak;
 use rayon::ThreadPool;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{Relaxed, SeqCst};
+use std::ops::ControlFlow::Continue;
 use std::sync::{Arc, Mutex};
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::prelude::breadth_first::{EventPred, Seq};
-use webgraph_algo::traits::{Parallel, Sequential};
+use webgraph_algo::prelude::breadth_first::EventPred;
+use webgraph_algo::visits::breadth_first::Seq;
+use webgraph_algo::visits::Sequential;
 
 const DEFAULT_ALPHA: f64 = 0.5;
 
@@ -25,7 +25,6 @@ pub struct GeometricCentralityResult {
 
 pub struct GeometricCentralities<'a, G: RandomAccessGraph> {
     graph: &'a G,
-    num_of_threads: usize,
     atomic_counter: Arc<atomic_counter::ConsistentCounter>,
     thread_pool: ThreadPool,
     pub closeness: Vec<f64>,
@@ -50,7 +49,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             .expect("Error in building thread pool");
         GeometricCentralities {
             graph,
-            num_of_threads: num_threads,
             atomic_counter: Arc::new(atomic_counter::ConsistentCounter::new(0)),
             thread_pool: thread_pool,
             closeness: Vec::new(),
@@ -137,6 +135,62 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
+    fn single_visit_sequential(
+        alpha: f64,
+        start: usize,
+        bfs: &mut Seq<&G>,
+    ) -> GeometricCentralityResult {
+        let mut closeness = 0f64;
+        let mut harmonic = 0f64;
+        let lin;
+        let mut exponential = 0f64;
+        let mut reachable: usize = 0;
+
+        bfs.reset();
+        bfs.visit([start], |event| {
+            let base = alpha;
+            match event {
+                EventPred::Init { .. } => {}
+                EventPred::Unknown {
+                    node: _node,
+                    pred: _pred,
+                    distance,
+                } => {
+                    let d = distance;
+                    reachable += 1;
+                    if d == 0 {
+                        //Skip first
+                        return Continue(());
+                    }
+                    let hd = 1f64 / d as f64;
+                    let ed = base.pow(d as f64);
+                    closeness += d as f64;
+                    harmonic += hd;
+                    exponential += ed;
+                }
+                EventPred::Known { .. } => {}
+                EventPred::Done { .. } => {}
+            }
+            Continue(())
+        })
+        .continue_value_no_break();
+
+        if closeness == 0f64 {
+            lin = 1f64;
+        } else {
+            closeness = 1f64 / closeness;
+            lin = reachable as f64 * reachable as f64 * closeness;
+        }
+        GeometricCentralityResult {
+            closeness,
+            harmonic,
+            lin,
+            exponential,
+            reachable,
+        }
+    }
+
+    /*
     pub fn compute_single_node<P: ProgressLog + Send + Sync>(
         &mut self,
         start_node: usize,
@@ -194,59 +248,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
         pl.done_with_count(num_of_nodes);
         results
-    }
-
-    fn single_visit_sequential(
-        alpha: f64,
-        start: usize,
-        bfs: &mut Seq<&G>,
-    ) -> GeometricCentralityResult {
-        let mut closeness = 0f64;
-        let mut harmonic = 0f64;
-        let lin;
-        let mut exponential = 0f64;
-        let mut reachable: usize = 0;
-
-        webgraph_algo::traits::Sequential::reset(bfs);
-        bfs.visit(
-            start,
-            |args| {
-                let base = alpha;
-                match args {
-                    EventPred::Unknown { distance, .. } => {
-                        let d = distance;
-                        reachable += 1;
-                        if d == 0 {
-                            //Skip first
-                            return Ok(());
-                        }
-                        let hd = 1f64 / d as f64;
-                        let ed = base.pow(d as f64);
-                        closeness += d as f64;
-                        harmonic += hd;
-                        exponential += ed;
-                        Ok(())
-                    }
-                    _ => Ok::<(), ()>(()),
-                }
-            },
-            no_logging!(),
-        )
-        .expect("Error in bfs");
-
-        if closeness == 0f64 {
-            lin = 1f64;
-        } else {
-            closeness = 1f64 / closeness;
-            lin = reachable as f64 * reachable as f64 * closeness;
-        }
-        GeometricCentralityResult {
-            closeness,
-            harmonic,
-            lin,
-            exponential,
-            reachable,
-        }
     }
 
     fn single_visit_parallel(
@@ -310,7 +311,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             reachable,
         }
     }
-
+     */
     pub fn set_alpha(&mut self, alpha: f64) {
         self.alpha = alpha;
     }
@@ -321,35 +322,12 @@ mod tests {
     use crate::geometric::GeometricCentralities;
     use crate::utils::{new_directed_cycle, transpose_arc_list};
     use assert_approx_eq::assert_approx_eq;
-    use webgraph::labels::Left;
     use webgraph::prelude::VecGraph;
-    use webgraph::traits::SequentialLabeling;
-
-    #[test]
-    fn test_compute_generic() {
-        let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
-        let l = &Left(g);
-        let mut centralities = GeometricCentralities::new(&l, 0);
-        centralities.compute(dsi_progress_logger::no_logging!());
-
-        assert_eq!(0f64, centralities.closeness[0]);
-        assert_eq!(1f64, centralities.closeness[1]);
-        assert_eq!(1f64 / 3f64, centralities.closeness[2]);
-
-        assert_eq!(1f64, centralities.lin[0]);
-        assert_eq!(4f64, centralities.lin[1]);
-        assert_eq!(3f64, centralities.lin[2]);
-
-        assert_eq!(0f64, centralities.harmonic[0]);
-        assert_eq!(1f64, centralities.harmonic[1]);
-        assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
-    }
 
     #[test]
     fn test_compute() {
-        let g = VecGraph::from_arc_list(transpose_arc_list([(0, 1), (1, 2)]));
-        let l = &Left(g);
-        let mut centralities = GeometricCentralities::new(&l, 0);
+        let g = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
+        let mut centralities = GeometricCentralities::new(&g, 0);
         centralities.compute(dsi_progress_logger::no_logging!());
 
         assert_eq!(0f64, centralities.closeness[0]);
@@ -368,7 +346,7 @@ mod tests {
     #[test]
     fn test_cycle() {
         for size in [10, 50, 100] {
-            let graph = Left(new_directed_cycle(size));
+            let graph = new_directed_cycle(size);
             let mut centralities = GeometricCentralities::new(&graph, 0);
             centralities.compute(dsi_progress_logger::no_logging!());
 
@@ -388,12 +366,10 @@ mod tests {
         }
     }
 
+    /*
     #[test]
     fn test_compute_single_node() {
-        let graph = Left(VecGraph::from_arc_list(transpose_arc_list([
-            (0, 1),
-            (1, 2),
-        ])));
+        let graph = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
         let num_of_nodes = graph.num_nodes();
 
         let mut closeness = vec![-1f64; num_of_nodes];
@@ -433,7 +409,7 @@ mod tests {
     #[test]
     fn test_cycle_single_node() {
         for size in [10, 50, 100] {
-            let graph = Left(new_directed_cycle(size));
+            let graph = new_directed_cycle(size);
             let mut centralities = GeometricCentralities::new(&graph, 0);
 
             let num_of_nodes = graph.num_nodes();
@@ -466,4 +442,5 @@ mod tests {
             (0..size).for_each(|i| assert_approx_eq!(expected[i], harmonic[i], 1E-14f64));
         }
     }
+    */
 }

@@ -10,11 +10,11 @@ struct Args {
     #[arg(short = 'p', long)]
     path: String,
 
-    #[arg(short = 'a', long)]
-    all_single_node: bool,
+    #[arg(long)]
+    parallel: bool,
 
-    #[arg(short = 'd', long)]
-    disable_normal_compute: bool,
+    #[arg(short = 't', long, default_value = "0")]
+    threads: usize,
 
     #[arg(short = 'g', long, default_value = "100")]
     granularity: usize,
@@ -34,14 +34,12 @@ fn main() -> anyhow::Result<()> {
         .expect("Failed loading graph");
     let mut geom = GeometricCentralities::new(&graph, 0);
 
-    if !args.disable_normal_compute {
-        info!("-------------- Geom generic --------------");
+    if args.parallel {
+        info!("-------------- Computing with parallel visit --------------");
+        geom.compute_all_par_visit(&mut ProgressLogger::default(), args.granularity);
+    } else {
+        info!("-------------- Computing with sequential visit --------------");
         geom.compute(&mut ProgressLogger::default());
-    }
-
-    if args.all_single_node {
-        info!("-------------- Geom single node --------------");
-        //geom.compute_all_single_node(&mut ProgressLogger::default(), args.granularity);
     }
 
     info!("Done");

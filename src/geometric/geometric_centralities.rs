@@ -15,6 +15,18 @@ use webgraph_algo::visits::{Parallel, Sequential};
 
 const DEFAULT_ALPHA: f64 = 0.5;
 
+pub struct GeometricCentralities<'a, G: RandomAccessGraph> {
+    pub closeness: Vec<f64>,
+    pub harmonic: Vec<f64>,
+    pub lin: Vec<f64>,
+    pub exponential: Vec<f64>,
+    pub reachable: Vec<usize>,
+    graph: &'a G,
+    thread_pool: ThreadPool,
+    atomic_counter: Arc<atomic_counter::ConsistentCounter>,
+    alpha: f64,
+}
+
 #[derive(Clone, Debug)]
 pub struct GeometricCentralityResult {
     pub closeness: f64,
@@ -24,30 +36,12 @@ pub struct GeometricCentralityResult {
     pub reachable: usize,
 }
 
-pub struct GeometricCentralities<'a, G: RandomAccessGraph> {
-    graph: &'a G,
-    atomic_counter: Arc<atomic_counter::ConsistentCounter>,
-    thread_pool: ThreadPool,
-    pub closeness: Vec<f64>,
-    pub harmonic: Vec<f64>,
-    pub lin: Vec<f64>,
-    pub exponential: Vec<f64>,
-    pub reachable: Vec<usize>,
-    alpha: f64,
-}
-
 #[derive(Clone)]
 struct ReducerCollection<'a> {
     closeness: SharedReducer<'a, usize, usize>,
     harmonic: SharedReducer<'a, f64, f64>,
     exponential: SharedReducer<'a, f64, f64>,
     reachable: SharedReducer<'a, usize, usize>,
-}
-
-impl Drop for ReducerCollection<'_> {
-    fn drop(&mut self) {
-        //println!("dropping shared reducer!");
-    }
 }
 
 impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
@@ -75,24 +69,11 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    fn init(&mut self, pl: &mut impl ProgressLog) {
-        let n = self.graph.num_nodes();
-        self.closeness = vec![-1f64; n];
-        self.harmonic = vec![-1f64; n];
-        self.lin = vec![-1f64; n];
-        self.exponential = vec![-1f64; n];
-        self.reachable = vec![0; n];
+    pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
+        self.init(pl);
         self.atomic_counter.reset();
 
-        pl.item_name("visit")
-            //.display_memory(true) //TODO: check if this can be enabled https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
-            .local_speed(true)
-            .expected_updates(Some(n));
-    }
-
-    pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
         let num_of_nodes = self.graph.num_nodes();
-        self.init(pl);
         let thread_pool = &self.thread_pool;
 
         let closeness = self.closeness.as_sync_slice();
@@ -100,6 +81,8 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let lin = self.lin.as_sync_slice();
         let exponential = self.exponential.as_sync_slice();
         let reachable = self.reachable.as_sync_slice();
+
+        pl.display_memory(false); //TODO: check if this can be enabled https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
 
         pl.start(format!(
             "Computing geometric centralities with {} threads...",
@@ -137,6 +120,73 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             }
         });
         pl.done_with_count(num_of_nodes);
+    }
+
+    pub fn compute_single_node_par_visit(
+        &mut self,
+        start_node: usize,
+        pl: &mut impl ProgressLog,
+        granularity: usize,
+    ) -> GeometricCentralityResult {
+        let num_of_nodes = self.graph.num_nodes();
+
+        pl.item_name("visit")
+            .display_memory(true)
+            .local_speed(true)
+            .expected_updates(Some(num_of_nodes));
+        pl.start(format!(
+            "Computing geometric centralities only on node {} with {} threads...",
+            start_node,
+            self.thread_pool.current_num_threads()
+        ));
+
+        let mut bfs = ParFair::new(self.graph, granularity);
+        let res = Self::single_visit_parallel(self.alpha, start_node, &mut bfs, &self.thread_pool);
+
+        pl.done();
+        res
+    }
+
+    pub fn compute_all_par_visit(&mut self, pl: &mut impl ProgressLog, granularity: usize) {
+        self.init(pl);
+        let num_of_nodes = self.graph.num_nodes();
+
+        pl.start(format!(
+            "Computing geometric centralities on all nodes with parallel bfs with {} threads...",
+            self.thread_pool.current_num_threads()
+        ));
+
+        let mut bfs = ParFair::new(self.graph, granularity);
+
+        for node in 0..num_of_nodes {
+            let result = Self::single_visit_parallel(self.alpha, node, &mut bfs, &self.thread_pool);
+            self.closeness[node] = result.closeness;
+            self.harmonic[node] = result.harmonic;
+            self.lin[node] = result.lin;
+            self.exponential[node] = result.exponential;
+            self.reachable[node] = result.reachable;
+            pl.update();
+        }
+
+        pl.done_with_count(num_of_nodes)
+    }
+
+    pub fn set_alpha(&mut self, alpha: f64) {
+        self.alpha = alpha;
+    }
+
+    fn init(&mut self, pl: &mut impl ProgressLog) {
+        let n = self.graph.num_nodes();
+        self.closeness = vec![-1f64; n];
+        self.harmonic = vec![-1f64; n];
+        self.lin = vec![-1f64; n];
+        self.exponential = vec![-1f64; n];
+        self.reachable = vec![0; n];
+
+        pl.item_name("visit")
+            .display_memory(true)
+            .local_speed(true)
+            .expected_updates(Some(self.graph.num_nodes()));
     }
 
     fn single_visit_sequential(
@@ -192,61 +242,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             exponential,
             reachable,
         }
-    }
-
-    pub fn compute_single_node_par_visit(
-        &mut self,
-        start_node: usize,
-        pl: &mut impl ProgressLog,
-        granularity: usize,
-    ) -> GeometricCentralityResult {
-        let num_of_nodes = self.graph.num_nodes();
-
-        pl.start(format!(
-            "Computing geometric centralities only on node {} with {} threads...",
-            start_node,
-            self.thread_pool.current_num_threads()
-        ));
-
-        pl.display_memory(true)
-            .item_name("node")
-            .local_speed(true)
-            .expected_updates(Some(num_of_nodes));
-
-        let mut bfs = ParFair::new(self.graph, granularity);
-        let res = Self::single_visit_parallel(self.alpha, start_node, &mut bfs, &self.thread_pool);
-
-        pl.done();
-        res
-    }
-
-    pub fn compute_all_par_visit(&mut self, pl: &mut impl ProgressLog, granularity: usize) {
-        self.init(pl);
-        let num_of_nodes = self.graph.num_nodes();
-
-        pl.start(format!(
-            "Computing geometric centralities on all nodes with parallel bfs with {} threads...",
-            self.thread_pool.current_num_threads()
-        ));
-
-        pl.display_memory(true)
-            .item_name("visit")
-            .local_speed(true)
-            .expected_updates(Some(num_of_nodes));
-
-        let mut bfs = ParFair::new(self.graph, granularity);
-
-        for node in 0..num_of_nodes {
-            let result = Self::single_visit_parallel(self.alpha, node, &mut bfs, &self.thread_pool);
-            self.closeness[node] = result.closeness;
-            self.harmonic[node] = result.harmonic;
-            self.lin[node] = result.lin;
-            self.exponential[node] = result.exponential;
-            self.reachable[node] = result.reachable;
-            pl.update();
-        }
-
-        pl.done_with_count(num_of_nodes)
     }
 
     fn single_visit_parallel(
@@ -319,10 +314,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             reachable,
         }
     }
-
-    pub fn set_alpha(&mut self, alpha: f64) {
-        self.alpha = alpha;
-    }
 }
 
 #[cfg(test)]
@@ -338,17 +329,17 @@ mod tests {
         let mut centralities = GeometricCentralities::new(&g, 0);
         centralities.compute(dsi_progress_logger::no_logging!());
 
-        assert_eq!(0f64, centralities.closeness[0]);
-        assert_eq!(1f64, centralities.closeness[1]);
-        assert_eq!(1f64 / 3f64, centralities.closeness[2]);
+        assert_eq!(centralities.closeness[0], 0f64);
+        assert_eq!(centralities.closeness[1], 1f64);
+        assert_eq!(centralities.closeness[2], 1f64 / 3f64);
 
-        assert_eq!(1f64, centralities.lin[0]);
-        assert_eq!(4f64, centralities.lin[1]);
-        assert_eq!(3f64, centralities.lin[2]);
+        assert_eq!(centralities.lin[0], 1f64);
+        assert_eq!(centralities.lin[1], 4f64);
+        assert_eq!(centralities.lin[2], 3f64);
 
-        assert_eq!(0f64, centralities.harmonic[0]);
-        assert_eq!(1f64, centralities.harmonic[1]);
-        assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
+        assert_eq!(centralities.harmonic[0], 0f64);
+        assert_eq!(centralities.harmonic[1], 1f64);
+        assert_eq!(centralities.harmonic[2], 3f64 / 2f64);
     }
 
     #[test]
@@ -362,15 +353,15 @@ mod tests {
 
             expected.resize(size, 2. / (size as f64 * (size as f64 - 1.)));
             (0..size)
-                .for_each(|i| assert_approx_eq!(expected[i], centralities.closeness[i], 1E-15f64));
+                .for_each(|i| assert_approx_eq!(centralities.closeness[i], expected[i], 1E-15f64));
 
             expected.fill(size as f64 * 2. / (size as f64 - 1.));
-            (0..size).for_each(|i| assert_approx_eq!(expected[i], centralities.lin[i], 1E-15f64));
+            (0..size).for_each(|i| assert_approx_eq!(centralities.lin[i], expected[i], 1E-15f64));
 
             let s = (1..size).fold(0f64, |acc, i| acc + 1. / (i as f64));
             expected.fill(s);
             (0..size)
-                .for_each(|i| assert_approx_eq!(expected[i], centralities.harmonic[i], 1E-14f64));
+                .for_each(|i| assert_approx_eq!(centralities.harmonic[i], expected[i], 1E-14f64));
         }
     }
 
@@ -380,17 +371,17 @@ mod tests {
         let mut centralities = GeometricCentralities::new(&graph, 0);
         centralities.compute_all_par_visit(&mut dsi_progress_logger::ProgressLogger::default(), 1);
 
-        assert_eq!(0f64, centralities.closeness[0]);
-        assert_eq!(1f64, centralities.closeness[1]);
-        assert_eq!(1f64 / 3f64, centralities.closeness[2]);
+        assert_eq!(centralities.closeness[0], 0f64);
+        assert_eq!(centralities.closeness[1], 1f64);
+        assert_eq!(centralities.closeness[2], 1f64 / 3f64);
 
-        assert_eq!(1f64, centralities.lin[0]);
-        assert_eq!(4f64, centralities.lin[1]);
-        assert_eq!(3f64, centralities.lin[2]);
+        assert_eq!(centralities.lin[0], 1f64);
+        assert_eq!(centralities.lin[1], 4f64);
+        assert_eq!(centralities.lin[2], 3f64);
 
-        assert_eq!(0f64, centralities.harmonic[0]);
-        assert_eq!(1f64, centralities.harmonic[1]);
-        assert_eq!(3f64 / 2f64, centralities.harmonic[2]);
+        assert_eq!(centralities.harmonic[0], 0f64);
+        assert_eq!(centralities.harmonic[1], 1f64);
+        assert_eq!(centralities.harmonic[2], 3f64 / 2f64);
     }
 
     #[test]
@@ -405,15 +396,15 @@ mod tests {
 
             expected.resize(size, 2. / (size as f64 * (size as f64 - 1.)));
             (0..size)
-                .for_each(|i| assert_approx_eq!(expected[i], centralities.closeness[i], 1E-15f64));
+                .for_each(|i| assert_approx_eq!(centralities.closeness[i], expected[i], 1E-15f64));
 
             expected.fill(size as f64 * 2. / (size as f64 - 1.));
-            (0..size).for_each(|i| assert_approx_eq!(expected[i], centralities.lin[i], 1E-15f64));
+            (0..size).for_each(|i| assert_approx_eq!(centralities.lin[i], expected[i], 1E-15f64));
 
             let s = (1..size).fold(0f64, |acc, i| acc + 1. / (i as f64));
             expected.fill(s);
             (0..size)
-                .for_each(|i| assert_approx_eq!(expected[i], centralities.harmonic[i], 1E-14f64));
+                .for_each(|i| assert_approx_eq!(centralities.harmonic[i], expected[i], 1E-14f64));
         }
     }
 }

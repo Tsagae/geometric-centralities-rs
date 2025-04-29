@@ -20,7 +20,7 @@ struct Args {
     #[arg(short = 'n', long, default_value = "0")]
     node: usize,
 
-    #[arg(short = 's', long, default_value = "30")]
+    #[arg(short = 's', long, default_value = "60")]
     sample_size: usize,
 }
 

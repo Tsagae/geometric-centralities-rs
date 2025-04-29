@@ -1,5 +1,5 @@
 use clap::Parser;
-use dsi_progress_logger::ProgressLogger;
+use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::geometric::GeometricCentralities;
 use log::info;
 use std::env;
@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
         geom.compute_all_par_visit(&mut ProgressLogger::default(), args.granularity);
     } else {
         println!("Computing with sequential visit");
-        geom.compute(&mut ProgressLogger::default());
+        geom.compute(&mut ConcurrentWrapper::new());
     }
 
     write_nums_to_file(&results_dir, "closeness", geom.closeness.iter());

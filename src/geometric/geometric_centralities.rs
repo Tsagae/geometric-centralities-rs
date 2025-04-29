@@ -1,11 +1,11 @@
 use atomic_counter::AtomicCounter;
 use common_traits::Number;
-use dsi_progress_logger::ProgressLog;
+use dsi_progress_logger::{ConcurrentProgressLog, ProgressLog};
 use no_break::NoBreak;
 use openmp_reducer::{Reducer, SharedReducer};
 use rayon::ThreadPool;
 use std::ops::ControlFlow::Continue;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
@@ -75,7 +75,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    fn init<'a, P: ProgressLog + Send + Sync>(&mut self, pl: &'a mut P) -> Arc<Mutex<&'a mut P>> {
+    fn init(&mut self, pl: &mut impl ProgressLog) {
         let n = self.graph.num_nodes();
         self.closeness = vec![-1f64; n];
         self.harmonic = vec![-1f64; n];
@@ -84,17 +84,15 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         self.reachable = vec![0; n];
         self.atomic_counter.reset();
 
-        pl.display_memory(true)
-            .item_name("visit")
+        pl.item_name("visit")
+            //.display_memory(true) //TODO: check if this can be enabled https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
             .local_speed(true)
             .expected_updates(Some(n));
-
-        Arc::new(Mutex::new(pl))
     }
 
-    pub fn compute<P: ProgressLog + Send + Sync>(&mut self, pl: &mut P) {
+    pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
         let num_of_nodes = self.graph.num_nodes();
-        let shared_pl = self.init::<P>(pl);
+        self.init(pl);
         let thread_pool = &self.thread_pool;
 
         let closeness = self.closeness.as_sync_slice();
@@ -103,20 +101,17 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let exponential = self.exponential.as_sync_slice();
         let reachable = self.reachable.as_sync_slice();
 
-        {
-            let mut pl = shared_pl.lock().expect("Error in taking mut pl");
-            pl.start(format!(
-                "Computing geometric centralities with {} threads...",
-                &self.thread_pool.current_num_threads()
-            ));
-        }
+        pl.start(format!(
+            "Computing geometric centralities with {} threads...",
+            &self.thread_pool.current_num_threads()
+        ));
 
         thread_pool.in_place_scope(|scope| {
             for _ in 0..thread_pool.current_num_threads() {
                 let thread_atomic_counter = Arc::clone(&self.atomic_counter);
                 let num_of_nodes = self.graph.num_nodes();
                 let graph = self.graph;
-                let local_pl = Arc::clone(&shared_pl);
+                let mut local_pl = pl.clone();
                 let alpha = self.alpha;
 
                 scope.spawn(move |_| {
@@ -136,18 +131,12 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                             reachable[target_node].set(centralities.reachable);
                         }
                         target_node = atom_counter.inc();
-                        {
-                            let mut pl = local_pl.lock().expect("Error in taking mut pl");
-                            pl.update();
-                        }
+                        local_pl.update();
                     }
                 });
             }
         });
-        {
-            let mut pl = shared_pl.lock().expect("Error in taking mut pl");
-            pl.done_with_count(num_of_nodes);
-        }
+        pl.done_with_count(num_of_nodes);
     }
 
     fn single_visit_sequential(
@@ -205,10 +194,10 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         }
     }
 
-    pub fn compute_single_node_par_visit<P: ProgressLog + Send + Sync>(
+    pub fn compute_single_node_par_visit(
         &mut self,
         start_node: usize,
-        pl: &mut P,
+        pl: &mut impl ProgressLog,
         granularity: usize,
     ) -> GeometricCentralityResult {
         let num_of_nodes = self.graph.num_nodes();
@@ -231,11 +220,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         res
     }
 
-    pub fn compute_all_par_visit<P: ProgressLog + Send + Sync>(
-        &mut self,
-        pl: &mut P,
-        granularity: usize,
-    ) {
+    pub fn compute_all_par_visit(&mut self, pl: &mut impl ProgressLog, granularity: usize) {
         self.init(pl);
         let num_of_nodes = self.graph.num_nodes();
 

@@ -1,5 +1,5 @@
 use clap::Parser;
-use dsi_progress_logger::ProgressLogger;
+use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::geometric::GeometricCentralities;
 use log::info;
 use webgraph::prelude::BvGraph;
@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         geom.compute_all_par_visit(&mut ProgressLogger::default(), args.granularity);
     } else {
         info!("-------------- Computing with sequential visit --------------");
-        geom.compute(&mut ProgressLogger::default());
+        geom.compute(&mut ConcurrentWrapper::with_threshold(500));
     }
 
     info!("Done");

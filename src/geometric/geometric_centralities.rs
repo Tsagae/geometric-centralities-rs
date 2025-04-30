@@ -2,16 +2,16 @@ use atomic_counter::AtomicCounter;
 use common_traits::Number;
 use dsi_progress_logger::{ConcurrentProgressLog, ProgressLog};
 use no_break::NoBreak;
+use nonmax::NonMaxUsize;
 use openmp_reducer::Reducer;
 use rayon::ThreadPool;
-use std::collections::BTreeMap;
 use std::ops::ControlFlow::Continue;
 use std::sync::Arc;
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::prelude::breadth_first::{EventNoPred, EventPred};
-use webgraph_algo::visits::breadth_first::{ParFair, Seq};
+use webgraph_algo::prelude::breadth_first::EventPred;
+use webgraph_algo::visits::breadth_first::{EventNoPred, ParFair, Seq};
 use webgraph_algo::visits::{Parallel, Sequential};
 
 const DEFAULT_ALPHA: f64 = 0.5;
@@ -243,26 +243,36 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         visit: &mut ParFair<&G>,
         thread_pool: &ThreadPool,
     ) -> GeometricCentralityResult {
+        #[derive(Clone, Default, Debug)]
+        struct ReducerLocalValues {
+            distance: Option<NonMaxUsize>,
+            n: usize,
+        }
+
         let base = alpha;
         visit.reset();
 
-        let reducer_func = |global: &mut GeometricCentralityResult,
-                            local: &BTreeMap<usize, usize>| {
+        let reducer_func = |global: &mut GeometricCentralityResult, local: &ReducerLocalValues| {
             let base = DEFAULT_ALPHA; //TODO: remember to parametrize this
-            for (&distance, &n_of_nodes) in local {
-                global.reachable += n_of_nodes;
-                if distance != 0 {
-                    let hd = 1f64 / distance as f64;
-                    let ed = base.pow(distance as f64);
+            let ReducerLocalValues { distance, n } = *local;
+            global.reachable += n;
+            match distance {
+                None => {}
+                Some(d) => {
+                    let d: usize = d.into();
+                    if d != 0 {
+                        let hd = 1f64 / d as f64;
+                        let ed = base.pow(d as f64);
 
-                    global.closeness += (distance * n_of_nodes) as f64;
-                    global.harmonic += hd * n_of_nodes as f64;
-                    global.exponential += ed * n_of_nodes as f64;
+                        global.closeness += (d * n) as f64;
+                        global.harmonic += hd * n as f64;
+                        global.exponential += ed * n as f64;
+                    }
                 }
             }
         };
 
-        let reducer = Reducer::<GeometricCentralityResult, BTreeMap<usize, usize>>::new(
+        let reducer = Reducer::<GeometricCentralityResult, ReducerLocalValues>::new(
             GeometricCentralityResult::default(),
             reducer_func,
         );
@@ -274,11 +284,17 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                 |shared_reducer, event| {
                     match event {
                         EventNoPred::Unknown { distance, .. } => {
-                            shared_reducer
-                                .as_mut()
-                                .entry(distance)
-                                .and_modify(|n| *n += 1)
-                                .or_insert(1);
+                            let reducer_val = shared_reducer.as_mut();
+                            match reducer_val.distance {
+                                None => {
+                                    reducer_val.distance =
+                                        Some(NonMaxUsize::try_from(distance).unwrap())
+                                }
+                                Some(reducer_dist) => {
+                                    debug_assert!(distance == reducer_dist.into())
+                                }
+                            }
+                            reducer_val.n += 1;
                         }
                         _ => {}
                     }

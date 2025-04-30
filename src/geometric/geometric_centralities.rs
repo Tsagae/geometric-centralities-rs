@@ -2,8 +2,9 @@ use atomic_counter::AtomicCounter;
 use common_traits::Number;
 use dsi_progress_logger::{ConcurrentProgressLog, ProgressLog};
 use no_break::NoBreak;
-use openmp_reducer::{Reducer, SharedReducer};
+use openmp_reducer::Reducer;
 use rayon::ThreadPool;
+use std::collections::BTreeMap;
 use std::ops::ControlFlow::Continue;
 use std::sync::Arc;
 use std::thread::available_parallelism;
@@ -27,21 +28,13 @@ pub struct GeometricCentralities<'a, G: RandomAccessGraph> {
     alpha: f64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct GeometricCentralityResult {
     pub closeness: f64,
     pub harmonic: f64,
     pub lin: f64,
     pub exponential: f64,
     pub reachable: usize,
-}
-
-#[derive(Clone)]
-struct ReducerCollection<'a> {
-    closeness: SharedReducer<'a, usize, usize>,
-    harmonic: SharedReducer<'a, f64, f64>,
-    exponential: SharedReducer<'a, f64, f64>,
-    reachable: SharedReducer<'a, usize, usize>,
 }
 
 impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
@@ -253,37 +246,39 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         let base = alpha;
         visit.reset();
 
-        let usize_reducer_func = |global: &mut usize, local: &usize| *global += *local;
-        let float_reducer_func = |global: &mut f64, local: &f64| *global += *local;
+        let reducer_func = |global: &mut GeometricCentralityResult,
+                            local: &BTreeMap<usize, usize>| {
+            let base = DEFAULT_ALPHA; //TODO: remember to parametrize this
+            for (&distance, &n_of_nodes) in local {
+                global.reachable += n_of_nodes;
+                if distance != 0 {
+                    let hd = 1f64 / distance as f64;
+                    let ed = base.pow(distance as f64);
 
-        let closeness_reducer = Reducer::<usize>::new(0, usize_reducer_func);
-        let harmonic_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
-        let exponential_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
-        let reachable_reducer = Reducer::<usize>::new(0, usize_reducer_func);
+                    global.closeness += (distance * n_of_nodes) as f64;
+                    global.harmonic += hd * n_of_nodes as f64;
+                    global.exponential += ed * n_of_nodes as f64;
+                }
+            }
+        };
+
+        let reducer = Reducer::<GeometricCentralityResult, BTreeMap<usize, usize>>::new(
+            GeometricCentralityResult::default(),
+            reducer_func,
+        );
 
         visit
             .par_visit_with(
                 [start],
-                ReducerCollection {
-                    closeness: closeness_reducer.share(),
-                    harmonic: harmonic_reducer.share(),
-                    exponential: exponential_reducer.share(),
-                    reachable: reachable_reducer.share(),
-                },
-                |cloned_reducer_collection, event| {
+                reducer.share(),
+                |shared_reducer, event| {
                     match event {
                         EventNoPred::Unknown { distance, .. } => {
-                            let d = distance;
-                            *cloned_reducer_collection.reachable.as_mut() += 1;
-                            if d == 0 {
-                                //Skip first
-                                return Continue(());
-                            }
-                            let hd = 1f64 / d as f64;
-                            let ed = base.pow(d as f64);
-                            *cloned_reducer_collection.closeness.as_mut() += d;
-                            *cloned_reducer_collection.harmonic.as_mut() += hd;
-                            *cloned_reducer_collection.exponential.as_mut() += ed;
+                            shared_reducer
+                                .as_mut()
+                                .entry(distance)
+                                .and_modify(|n| *n += 1)
+                                .or_insert(1);
                         }
                         _ => {}
                     }
@@ -293,26 +288,16 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             )
             .continue_value_no_break();
 
-        let mut closeness = closeness_reducer.get() as f64;
-        let harmonic = harmonic_reducer.get();
-        let lin;
-        let exponential = exponential_reducer.get();
-        let reachable = reachable_reducer.get();
+        let mut res = reducer.get();
 
-        if closeness == 0f64 {
-            lin = 1f64;
+        if res.closeness == 0f64 {
+            res.lin = 1f64;
         } else {
-            closeness = 1f64 / closeness;
-            lin = reachable as f64 * reachable as f64 * closeness;
+            res.closeness = 1f64 / res.closeness;
+            res.lin = res.reachable as f64 * res.reachable as f64 * res.closeness;
         }
 
-        GeometricCentralityResult {
-            closeness,
-            harmonic,
-            lin,
-            exponential,
-            reachable,
-        }
+        res
     }
 }
 

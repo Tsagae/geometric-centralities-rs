@@ -285,15 +285,12 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                     match event {
                         EventNoPred::Unknown { distance, .. } => {
                             let reducer_val = shared_reducer.as_mut();
-                            match reducer_val.distance {
-                                None => {
-                                    reducer_val.distance =
-                                        Some(NonMaxUsize::try_from(distance).unwrap())
-                                }
-                                Some(reducer_dist) => {
-                                    debug_assert!(distance == reducer_dist.into())
-                                }
-                            }
+                            debug_assert!(match reducer_val.distance {
+                                None => true,
+                                Some(prev_dist) =>
+                                    prev_dist == NonMaxUsize::try_from(distance).unwrap(),
+                            });
+                            reducer_val.distance = Some(NonMaxUsize::try_from(distance).unwrap());
                             reducer_val.n += 1;
                         }
                         _ => {}

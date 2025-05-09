@@ -22,3 +22,19 @@ pub(crate) fn new_directed_cycle(num_nodes: usize) -> VecGraph {
     }
     graph
 }
+
+#[allow(dead_code)]
+pub(crate) fn new_clique(num_nodes: usize) -> VecGraph {
+    let mut graph = VecGraph::new();
+    for i in 0..num_nodes {
+        graph.add_node(i);
+    }
+    for i in 0..num_nodes {
+        for j in 0..num_nodes {
+            if i != j {
+                graph.add_arc(i, j);
+            }
+        }
+    }
+    graph
+}

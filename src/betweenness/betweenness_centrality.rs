@@ -1,0 +1,274 @@
+use dsi_progress_logger::ConcurrentProgressLog;
+use rayon::ThreadPool;
+use std::thread::available_parallelism;
+use webgraph::traits::RandomAccessGraph;
+
+pub struct BetweennessCentrality<'a, G: RandomAccessGraph> {
+    pub betweenness: Vec<f64>,
+    graph: &'a G,
+    thread_pool: ThreadPool,
+}
+
+impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
+    pub fn new(graph: &G, num_of_threads: usize) -> BetweennessCentrality<G> {
+        let num_threads = if num_of_threads == 0 {
+            usize::from(available_parallelism().unwrap())
+        } else {
+            num_of_threads
+        };
+        let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
+        thread_pool_builder = thread_pool_builder.num_threads(num_threads);
+        let thread_pool = thread_pool_builder
+            .build()
+            .expect("Error in building thread pool");
+        BetweennessCentrality {
+            betweenness: Vec::new(),
+            graph,
+            thread_pool,
+        }
+    }
+
+    pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
+        self.betweenness = vec![0.; self.graph.num_nodes()];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::betweenness::BetweennessCentrality;
+    use crate::utils::{new_clique, new_directed_cycle};
+    use assert_approx_eq::assert_approx_eq;
+    use dsi_progress_logger::no_logging;
+    use webgraph::graphs::random::ErdosRenyi;
+    use webgraph::prelude::VecGraph;
+    use webgraph::traits::SequentialLabeling;
+
+    #[test]
+    fn test_path() {
+        let g = VecGraph::from_arcs([(0, 1), (1, 2)]);
+        let mut centrality = BetweennessCentrality::new(&g, 0);
+        centrality.compute(no_logging!());
+
+        assert_approx_eq!(centrality.betweenness[0], 0., 1E-5);
+        assert_approx_eq!(centrality.betweenness[1], 1., 1E-5);
+        assert_approx_eq!(centrality.betweenness[2], 0., 1E-5);
+    }
+
+    #[test]
+    fn test_lozenge() {
+        let g = VecGraph::from_arcs([(0, 1), (0, 2), (1, 3), (2, 3)]);
+        let mut centrality = BetweennessCentrality::new(&g, 0);
+        centrality.compute(no_logging!());
+
+        assert_approx_eq!(centrality.betweenness[0], 0., 1E-5);
+        assert_approx_eq!(centrality.betweenness[1], 0.5, 1E-5);
+        assert_approx_eq!(centrality.betweenness[2], 0.5, 1E-5);
+        assert_approx_eq!(centrality.betweenness[3], 0., 1E-5);
+    }
+
+    #[test]
+    fn test_cycle() {
+        for size in [10, 50, 100] {
+            let graph = new_directed_cycle(size);
+            let mut centrality = BetweennessCentrality::new(&graph, 0);
+            centrality.compute(no_logging!());
+
+            let mut expected = Vec::new();
+            expected.resize(size, ((size - 1) * (size - 2)) as f64 / 2.0);
+
+            (0..size)
+                .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+        }
+    }
+
+    #[test]
+    fn test_clique() {
+        for size in [10, 50, 100] {
+            let graph = new_clique(size);
+            let mut centrality = BetweennessCentrality::new(&graph, 0);
+            centrality.compute(no_logging!());
+
+            let expected = vec![0f64; size];
+
+            (0..size)
+                .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+        }
+    }
+
+    #[test]
+    fn test_clique_no_bridge_cycle() {
+        for p in [10, 50, 100] {
+            for k in [10, 50, 100] {
+                let mut arcs = Vec::new();
+                let mut graph = new_clique(k);
+                for i in 0..p {
+                    arcs.push((k + i, k + (i + 1) % p));
+                }
+                graph.add_arcs(arcs);
+
+                let mut centrality = BetweennessCentrality::new(&graph, 0);
+                centrality.compute(no_logging!());
+
+                let mut expected = vec![0f64; k + p];
+                (0..k).for_each(|i| expected[i] = 0.);
+                (k..k + p).for_each(|i| expected[i] = ((p - 1) * (p - 2)) as f64 / 2.0);
+
+                (0..k + p)
+                    .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+            }
+        }
+    }
+
+    #[test]
+    fn test_clique_forward_bridge_cycle() {
+        for p in [10, 50, 100] {
+            for k in [10, 50, 100] {
+                let mut graph = new_clique(k);
+                for i in 0..p + k {
+                    graph.add_node(i);
+                }
+                for i in 0..p {
+                    graph.add_arc(k + i, k + (i + 1) % p);
+                }
+                graph.add_arc(k - 1, k);
+
+                let mut centrality = BetweennessCentrality::new(&graph, 0);
+                centrality.compute(no_logging!());
+
+                let mut expected = vec![0f64; k + p];
+                (0..k - 1).for_each(|i| expected[i] = 0.);
+                expected[k - 1] = (p * (k - 1)) as f64;
+                (0..p).for_each(|d| {
+                    expected[k + d] = (k as i32 * (p as i32 - d as i32 - 1)) as f64 + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0;
+                });
+
+                (0..k + p).for_each(|i| {
+                    assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn test_clique_back_bridge_cycle() {
+        for p in [10, 50, 100] {
+            for k in [10, 50, 100] {
+                let mut arcs = Vec::new();
+                let mut graph = new_clique(k);
+                for i in 0..p {
+                    arcs.push((k + i, k + (i + 1) % p));
+                }
+                arcs.push((k, k - 1));
+                graph.add_arcs(arcs);
+
+                let mut centrality = BetweennessCentrality::new(&graph, 0);
+                centrality.compute(no_logging!());
+
+                let mut expected = vec![0f64; k + p];
+                (0..k - 1).for_each(|i| expected[i] = 0.);
+                expected[k - 1] = (p * (k - 1)) as f64;
+                (0..p).for_each(|d| {
+                    let t = match d {
+                        0 => p,
+                        _ => 0,
+                    };
+                    expected[k + d] = (k as i32 * (d as i32 - 1 + t as i32)) as f64 + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0;
+                });
+
+                (0..k + p)
+                    .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+            }
+        }
+    }
+
+    #[test]
+    fn test_clique_bi_bridge_cycle() {
+        for p in [10, 50, 100] {
+            for k in [10, 50, 100] {
+                let mut arcs = Vec::new();
+                let mut graph = new_clique(k);
+                for i in 0..p {
+                    arcs.push((k + i, k + (i + 1) % p));
+                }
+                arcs.push((k, k - 1));
+                arcs.push((k - 1, k));
+                graph.add_arcs(arcs);
+
+                let mut centrality = BetweennessCentrality::new(&graph, 0);
+                centrality.compute(no_logging!());
+
+                let mut expected = vec![0f64; k + p];
+                (0..k - 1).for_each(|i| expected[i] = 0.);
+                expected[k - 1] = (2 * p * (k - 1)) as f64;
+                expected[k] = (2 * k * (p - 1)) as f64 + ((p - 1) * (p - 2)) as f64 / 2.0;
+
+                (1..p)
+                    .for_each(|d| expected[k + d] = (k * (p - 2)) as f64 + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0);
+
+                (0..k + p)
+                    .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+            }
+        }
+    }
+
+    #[test]
+    fn test_random() {
+        for p in [0.1, 0.2, 0.5, 0.7] {
+            for size in [10, 50, 100] {
+                let graph = VecGraph::from_lender(ErdosRenyi::new(size, p, 0).iter());
+
+                let mut centrality_multiple_visits = BetweennessCentrality::new(&graph, 0);
+                centrality_multiple_visits.compute(no_logging!());
+
+                let mut centrality = BetweennessCentrality::new(&graph, 0);
+                centrality.compute(no_logging!());
+
+                let size = graph.num_nodes();
+                (0..size).for_each(|i| {
+                    assert_approx_eq!(
+                        centrality.betweenness[i],
+                        centrality_multiple_visits.betweenness[i],
+                        1E-12
+                    )
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn test_overflow_ok() {
+        let blocks = 20;
+        let block_size = 10;
+
+        overflow_test(blocks, block_size);
+    }
+
+    #[test]
+    #[should_panic] //TODO: maybe change with a different error handling
+    fn test_overflow_not_ok() {
+        let blocks = 40;
+        let block_size = 10;
+        overflow_test(blocks, block_size);
+    }
+
+    fn overflow_test(blocks: usize, block_size: usize) {
+        let n = blocks * block_size;
+
+        let mut graph = VecGraph::new();
+        let mut arcs = Vec::new();
+        let mut i = blocks;
+        while i != 0 {
+            let mut j = block_size - 1;
+            while j != 0 {
+                arcs.push((i * block_size, i * block_size + j + 1));
+                arcs.push((i * block_size + j + 1, (i + 1) * block_size % n));
+                j -= 1;
+            }
+            i -= 1;
+        }
+        graph.add_arcs(arcs);
+
+        let mut centrality = BetweennessCentrality::new(&graph, 0);
+        centrality.compute(no_logging!());
+    }
+}

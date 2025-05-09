@@ -69,6 +69,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         sigma[curr] = 1;
 
                         queue.push(curr);
+                        let mut overflow = false;
 
                         let mut i = 0;
                         while i != queue.len() {
@@ -81,19 +82,26 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                                     distance[s] = d + 1;
                                     delta[s] = 0.;
                                     queue.push(s);
-                                    //assert checkOverflow(sigma, node, currSigma, s); //TODO
-                                    //overflow |= sigma[s] > Long.MAX_VALUE - currSigma;
+                                    //TODO: maybe use a different error handling. Not debug assert?
+                                    debug_assert!(Self::check_overflow(
+                                        &sigma, node, curr_sigma, s
+                                    ));
+                                    overflow |= sigma[s] > i64::MAX - curr_sigma;
                                     sigma[s] += curr_sigma;
                                 } else if distance[s] == d + 1 {
-                                    //assert checkOverflow(sigma, node, currSigma, s); //TODO
-                                    //overflow |= sigma[s] > Long.MAX_VALUE - currSigma;
+                                    debug_assert!(Self::check_overflow(
+                                        &sigma, node, curr_sigma, s
+                                    ));
+                                    overflow |= sigma[s] > i64::MAX - curr_sigma;
                                     sigma[s] += curr_sigma;
                                 }
                             }
                             i += 1;
                         }
 
-                        //if overflow panic TODO
+                        if overflow {
+                            panic!("Path count overflow")
+                        }
 
                         for &node in queue[1..].iter().rev() {
                             let d = distance[node];
@@ -119,6 +127,13 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
 
         pl.done_with_count(num_nodes);
         self.betweenness = betweenness.into_inner().unwrap();
+    }
+
+    fn check_overflow(sigma: &[i64], node: usize, curr_sigma: i64, s: usize) -> bool {
+        if sigma[s] > i64::MAX - curr_sigma {
+            panic!("{} > {} ({node} -> {s})", sigma[s], i64::MAX - curr_sigma);
+        }
+        true
     }
 }
 

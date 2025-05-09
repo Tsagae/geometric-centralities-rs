@@ -1,5 +1,7 @@
 use clap::Parser;
+use common_traits::Sequence;
 use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
+use geometric_centralities::betweenness::BetweennessCentrality;
 use geometric_centralities::geometric::GeometricCentralities;
 use log::info;
 use std::env;
@@ -21,6 +23,12 @@ struct MainArgs {
 
     #[arg(short = 'g', long, default_value = "100")]
     granularity: usize,
+
+    #[arg(long)]
+    geometric: bool,
+
+    #[arg(long)]
+    betweenness: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -43,31 +51,31 @@ fn main() -> anyhow::Result<()> {
     let graph = BvGraph::with_basename(args.path)
         .load()
         .expect("Failed loading graph");
-    let mut geom = GeometricCentralities::new(&graph, args.threads);
 
-    /*
-    let start_node = 10000;
-    let res = geom.compute_single_node_par_visit(
-        start_node,
-        &mut ProgressLogger::default(),
-        args.granularity,
-    );
-    println!("reachable[{start_node}]: {}", res.reachable);
-    */
+    if args.geometric {
+        let mut geom = GeometricCentralities::new(&graph, args.threads);
 
-    if args.parallel {
-        println!("Computing with parallel visit");
-        geom.compute_all_par_visit(&mut ProgressLogger::default(), args.granularity);
-    } else {
-        println!("Computing with sequential visit");
-        geom.compute(&mut ConcurrentWrapper::new());
+        if args.parallel {
+            println!("Computing geometric centralities with parallel visit");
+            geom.compute_all_par_visit(&mut ProgressLogger::default(), args.granularity);
+        } else {
+            println!("Computing geometric centralities with sequential visit");
+            geom.compute(&mut ConcurrentWrapper::new());
+        }
+
+        write_nums_to_file(&results_dir, "closeness", geom.closeness.iter());
+        write_nums_to_file(&results_dir, "lin", geom.lin.iter());
+        write_nums_to_file(&results_dir, "exponential", geom.exponential.iter());
+        write_nums_to_file(&results_dir, "harmonic", geom.harmonic.iter());
+        write_nums_to_file(&results_dir, "reachable", geom.reachable.iter());
     }
 
-    write_nums_to_file(&results_dir, "closeness", geom.closeness.iter());
-    write_nums_to_file(&results_dir, "lin", geom.lin.iter());
-    write_nums_to_file(&results_dir, "exponential", geom.exponential.iter());
-    write_nums_to_file(&results_dir, "harmonic", geom.harmonic.iter());
-    write_nums_to_file(&results_dir, "reachable", geom.reachable.iter());
+    if args.betweenness {
+        let mut betweenness = BetweennessCentrality::new(&graph, args.threads);
+        println!("Computing betweenness centrality with sequential visit");
+        betweenness.compute(&mut ConcurrentWrapper::new());
+        write_nums_to_file(&results_dir, "betweenness", betweenness.betweenness.iter());
+    }
     info!("Done");
 
     Ok(())

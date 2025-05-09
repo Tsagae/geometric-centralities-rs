@@ -1,5 +1,7 @@
+use atomic_counter::AtomicCounter;
 use dsi_progress_logger::ConcurrentProgressLog;
 use rayon::ThreadPool;
+use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
 
@@ -29,7 +31,94 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
     }
 
     pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
-        self.betweenness = vec![0.; self.graph.num_nodes()];
+        let num_nodes = self.graph.num_nodes();
+        let thread_pool = &self.thread_pool;
+
+        pl.item_name("visit")
+            .display_memory(false) //TODO: check if this can be enabled https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
+            .local_speed(true)
+            .expected_updates(Some(num_nodes));
+
+        pl.start(format!(
+            "Computing betweenness centrality with {} threads...",
+            &self.thread_pool.current_num_threads()
+        ));
+
+        let atomic_counter = atomic_counter::ConsistentCounter::new(0);
+        let betweenness: Mutex<Vec<f64>> = Mutex::new(vec![0.; num_nodes]);
+
+        thread_pool.in_place_scope(|scope| {
+            for _ in 0..thread_pool.current_num_threads() {
+                scope.spawn(|_| {
+                    let graph = self.graph;
+                    let mut pl = pl.clone();
+                    let mut distance: Vec<i32> = vec![-1; num_nodes];
+                    let mut delta: Vec<f64> = vec![0.; num_nodes];
+                    let mut sigma: Vec<i64> = vec![0; num_nodes];
+                    let mut queue = Vec::new();
+
+                    loop {
+                        let curr = atomic_counter.inc();
+                        if curr >= num_nodes {
+                            break;
+                        }
+                        queue.clear();
+                        distance.fill(-1);
+                        sigma.fill(0);
+                        distance[curr] = 0;
+                        sigma[curr] = 1;
+
+                        queue.push(curr);
+
+                        let mut i = 0;
+                        while i != queue.len() {
+                            let node = queue[i];
+                            let d = distance[node];
+                            assert_ne!(d, -1);
+                            let curr_sigma = sigma[node];
+                            for s in graph.successors(node) {
+                                if distance[s] == -1 {
+                                    distance[s] = d + 1;
+                                    delta[s] = 0.;
+                                    queue.push(s);
+                                    //assert checkOverflow(sigma, node, currSigma, s); //TODO
+                                    //overflow |= sigma[s] > Long.MAX_VALUE - currSigma;
+                                    sigma[s] += curr_sigma;
+                                } else if distance[s] == d + 1 {
+                                    //assert checkOverflow(sigma, node, currSigma, s); //TODO
+                                    //overflow |= sigma[s] > Long.MAX_VALUE - currSigma;
+                                    sigma[s] += curr_sigma;
+                                }
+                            }
+                            i += 1;
+                        }
+
+                        //if overflow panic TODO
+
+                        for &node in queue[1..].iter().rev() {
+                            let d = distance[node];
+                            let sigma_node = sigma[node] as f64;
+                            for s in graph.successors(node) {
+                                if distance[s] == d + 1 {
+                                    delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
+                                }
+                            }
+                        }
+
+                        {
+                            let mut lock_betweenness = betweenness.lock().unwrap();
+                            for &node in &queue[1..] {
+                                lock_betweenness[node] += delta[node];
+                            }
+                        }
+                        pl.update();
+                    }
+                });
+            }
+        });
+
+        pl.done_with_count(num_nodes);
+        self.betweenness = betweenness.into_inner().unwrap();
     }
 }
 

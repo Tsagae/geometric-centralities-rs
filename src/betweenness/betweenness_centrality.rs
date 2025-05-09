@@ -212,14 +212,13 @@ mod tests {
     fn test_clique_forward_bridge_cycle() {
         for p in [10, 50, 100] {
             for k in [10, 50, 100] {
+                let mut arcs = Vec::new();
                 let mut graph = new_clique(k);
-                for i in 0..p + k {
-                    graph.add_node(i);
-                }
                 for i in 0..p {
-                    graph.add_arc(k + i, k + (i + 1) % p);
+                    arcs.push((k + i, k + (i + 1) % p));
                 }
-                graph.add_arc(k - 1, k);
+                arcs.push((k - 1, k));
+                graph.add_arcs(arcs);
 
                 let mut centrality = BetweennessCentrality::new(&graph, 0);
                 centrality.compute(no_logging!());
@@ -228,7 +227,8 @@ mod tests {
                 (0..k - 1).for_each(|i| expected[i] = 0.);
                 expected[k - 1] = (p * (k - 1)) as f64;
                 (0..p).for_each(|d| {
-                    expected[k + d] = (k as i32 * (p as i32 - d as i32 - 1)) as f64 + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0;
+                    expected[k + d] = (k as i32 * (p as i32 - d as i32 - 1)) as f64
+                        + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0;
                 });
 
                 (0..k + p).for_each(|i| {
@@ -261,7 +261,8 @@ mod tests {
                         0 => p,
                         _ => 0,
                     };
-                    expected[k + d] = (k as i32 * (d as i32 - 1 + t as i32)) as f64 + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0;
+                    expected[k + d] = (k as i32 * (d as i32 - 1 + t as i32)) as f64
+                        + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0;
                 });
 
                 (0..k + p)
@@ -291,8 +292,10 @@ mod tests {
                 expected[k - 1] = (2 * p * (k - 1)) as f64;
                 expected[k] = (2 * k * (p - 1)) as f64 + ((p - 1) * (p - 2)) as f64 / 2.0;
 
-                (1..p)
-                    .for_each(|d| expected[k + d] = (k * (p - 2)) as f64 + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0);
+                (1..p).for_each(|d| {
+                    expected[k + d] =
+                        (k * (p - 2)) as f64 + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0
+                });
 
                 (0..k + p)
                     .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));

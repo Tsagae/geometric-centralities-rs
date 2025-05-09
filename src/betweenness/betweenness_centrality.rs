@@ -345,18 +345,18 @@ mod tests {
 
     fn overflow_test(blocks: usize, block_size: usize) {
         let n = blocks * block_size;
-
-        let mut graph = VecGraph::new();
         let mut arcs = Vec::new();
+        let mut graph = VecGraph::new();
+
         let mut i = blocks;
         while i != 0 {
+            i -= 1;
             let mut j = block_size - 1;
             while j != 0 {
+                j -= 1;
                 arcs.push((i * block_size, i * block_size + j + 1));
                 arcs.push((i * block_size + j + 1, (i + 1) * block_size % n));
-                j -= 1;
             }
-            i -= 1;
         }
         graph.add_arcs(arcs);
 

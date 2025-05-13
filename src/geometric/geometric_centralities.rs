@@ -5,7 +5,6 @@ use no_break::NoBreak;
 use openmp_reducer::{Reducer, SharedReducer};
 use rayon::ThreadPool;
 use std::ops::ControlFlow::Continue;
-use std::sync::Arc;
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
@@ -23,7 +22,6 @@ pub struct GeometricCentralities<'a, G: RandomAccessGraph> {
     pub reachable: Vec<usize>,
     graph: &'a G,
     thread_pool: ThreadPool,
-    atomic_counter: Arc<atomic_counter::ConsistentCounter>,
     alpha: f64,
 }
 
@@ -58,7 +56,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             .expect("Error in building thread pool");
         GeometricCentralities {
             graph,
-            atomic_counter: Arc::new(atomic_counter::ConsistentCounter::new(0)),
             thread_pool: thread_pool,
             closeness: Vec::new(),
             harmonic: Vec::new(),
@@ -71,8 +68,8 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
     pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
         self.init(pl);
-        self.atomic_counter.reset();
-
+        let atomic_counter = atomic_counter::ConsistentCounter::new(0);
+        
         let num_of_nodes = self.graph.num_nodes();
         let thread_pool = &self.thread_pool;
 
@@ -91,21 +88,15 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
 
         thread_pool.in_place_scope(|scope| {
             for _ in 0..thread_pool.current_num_threads() {
-                let thread_atomic_counter = Arc::clone(&self.atomic_counter);
-                let num_of_nodes = self.graph.num_nodes();
-                let graph = self.graph;
-                let mut local_pl = pl.clone();
-                let alpha = self.alpha;
-
-                scope.spawn(move |_| {
-                    let mut bfs = Seq::new(graph);
-                    let atom_counter = thread_atomic_counter;
+                scope.spawn(|_| {   
+                    let mut bfs = Seq::new(self.graph);
                     let num_of_nodes = num_of_nodes;
-
-                    let mut target_node = atom_counter.inc();
+                    let mut pl = pl.clone();
+                    
+                    let mut target_node = atomic_counter.inc();
                     while target_node < num_of_nodes {
                         let centralities =
-                            Self::single_visit_sequential(alpha, target_node, &mut bfs);
+                            Self::single_visit_sequential(self.alpha, target_node, &mut bfs);
                         unsafe {
                             closeness[target_node].set(centralities.closeness);
                             harmonic[target_node].set(centralities.harmonic);
@@ -113,8 +104,8 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
                             exponential[target_node].set(centralities.exponential);
                             reachable[target_node].set(centralities.reachable);
                         }
-                        target_node = atom_counter.inc();
-                        local_pl.update();
+                        target_node = atomic_counter.inc();
+                        pl.update();
                     }
                 });
             }

@@ -62,6 +62,10 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         if curr >= num_nodes {
                             break;
                         }
+                        if graph.outdegree(curr) == 0 { 
+                            pl.update();
+                            continue;
+                        }
                         queue.clear();
                         distance.fill(-1);
                         sigma.fill(0);
@@ -113,7 +117,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                             }
                         }
 
-                        {
+                        { //TODO: try lock, if it fails update betweenness at next step after overflow check
                             let mut lock_betweenness = betweenness.lock().unwrap();
                             for &node in &queue[1..] {
                                 lock_betweenness[node] += delta[node];

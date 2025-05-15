@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
     let mut betw = BetweennessCentrality::new(&graph, 0);
 
     info!("-------------- Computing betweenness --------------");
-    betw.compute(&mut ConcurrentWrapper::new());
+    betw.compute(&mut ConcurrentWrapper::with_threshold(500));
 
     info!("Done");
 

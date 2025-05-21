@@ -1,8 +1,8 @@
-use dsi_progress_logger::{ConcurrentProgressLog, ProgressLog};
+use dsi_progress_logger::ProgressLog;
 use itertools::Itertools;
 use openmp_reducer::Reducer;
 use rayon::iter::ParallelIterator;
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator};
+use rayon::iter::IntoParallelIterator;
 use rayon::ThreadPool;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         }
     }
 
-    pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
+    pub fn compute(&mut self, pl: &mut impl ProgressLog) {
         let num_nodes = self.graph.num_nodes();
         let thread_pool = &self.thread_pool;
 

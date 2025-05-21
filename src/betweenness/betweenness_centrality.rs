@@ -62,7 +62,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         if curr >= num_nodes {
                             break;
                         }
-                        if graph.outdegree(curr) == 0 { 
+                        if graph.outdegree(curr) == 0 {
                             pl.update();
                             continue;
                         }
@@ -84,7 +84,6 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                             for s in graph.successors(node) {
                                 if distance[s] == -1 {
                                     distance[s] = d + 1;
-                                    delta[s] = 0.;
                                     queue.push(s);
                                     //TODO: maybe use a different error handling. Not debug assert?
                                     debug_assert!(Self::check_overflow(
@@ -110,6 +109,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         for &node in queue[1..].iter().rev() {
                             let d = distance[node];
                             let sigma_node = sigma[node] as f64;
+                            delta[node] = 0.;
                             for s in graph.successors(node) {
                                 if distance[s] == d + 1 {
                                     delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
@@ -117,7 +117,8 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                             }
                         }
 
-                        { //TODO: try lock, if it fails update betweenness at next step after overflow check
+                        {
+                            //TODO: try lock, if it fails update betweenness at next step after overflow check
                             let mut lock_betweenness = betweenness.lock().unwrap();
                             for &node in &queue[1..] {
                                 lock_betweenness[node] += delta[node];

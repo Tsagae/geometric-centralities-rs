@@ -1,7 +1,7 @@
 use atomic_counter::AtomicCounter;
 use dsi_progress_logger::ConcurrentProgressLog;
+use openmp_reducer::Reducer;
 use rayon::ThreadPool;
-use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
 
@@ -45,7 +45,16 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         ));
 
         let atomic_counter = atomic_counter::ConsistentCounter::new(0);
-        let betweenness: Mutex<Vec<f64>> = Mutex::new(vec![0.; num_nodes]);
+
+        let reducer_func = |global: &mut Vec<f64>, local: &Vec<f64>| {
+            local
+                .iter()
+                .zip(0..local.len())
+                .for_each(|(&e, i)| global[i] += e)
+        };
+
+        let betweenness_reducer =
+            Reducer::<Vec<f64>, Vec<f64>>::new(vec![0.; num_nodes], reducer_func);
 
         thread_pool.in_place_scope(|scope| {
             for _ in 0..thread_pool.current_num_threads() {
@@ -56,6 +65,8 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                     let mut delta: Vec<f64> = vec![0.; num_nodes];
                     let mut sigma: Vec<i64> = vec![0; num_nodes];
                     let mut queue = Vec::new();
+                    let mut local_reducer = betweenness_reducer.share();
+                    local_reducer.as_mut().resize(num_nodes, 0.);
 
                     loop {
                         let curr = atomic_counter.inc();
@@ -117,13 +128,11 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                             }
                         }
 
-                        {
-                            //TODO: try lock, if it fails update betweenness at next step after overflow check
-                            let mut lock_betweenness = betweenness.lock().unwrap();
-                            for &node in &queue[1..] {
-                                lock_betweenness[node] += delta[node];
-                            }
+                        let local_betweenness = local_reducer.as_mut();
+                        for &node in &queue[1..] {
+                            local_betweenness[node] += delta[node];
                         }
+
                         pl.update();
                     }
                 });
@@ -131,7 +140,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         });
 
         pl.done_with_count(num_nodes);
-        self.betweenness = betweenness.into_inner().unwrap();
+        self.betweenness = betweenness_reducer.get();
     }
 
     fn check_overflow(sigma: &[i64], node: usize, curr_sigma: i64, s: usize) -> bool {

@@ -1,3 +1,3 @@
 pub mod betweenness;
 pub mod geometric;
-mod utils;
+pub mod utils;

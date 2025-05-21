@@ -1,12 +1,13 @@
 use dsi_progress_logger::ProgressLog;
 use itertools::Itertools;
 use openmp_reducer::Reducer;
-use rayon::iter::ParallelIterator;
 use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
 use rayon::ThreadPool;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
@@ -55,11 +56,12 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         let betweenness: Mutex<Vec<f64>> = Mutex::new(vec![0.; num_nodes]);
 
         let mut bfs = webgraph_algo::visits::breadth_first::ParFairPred::new(self.graph, 100);
+        let chunk_size = 1000;
         let cache_node_capacity = 30000;
-        for mut chunk in (0..num_nodes).chunks(1000).into_iter() {
+        for mut chunk in (0..num_nodes).chunks(chunk_size).into_iter() {
             let first_node_in_chunk = chunk.next().unwrap();
             let last_node_in_chunk = chunk.last().unwrap();
-            let mut node_cache: HashMap<usize, Vec<usize>> = HashMap::new();
+            let mut node_cache: HashMap<usize, Vec<usize>> = HashMap::new(); // TODO: Change this with Vec<Option<Vec<usize>>> of size num_of_nodes
             let reducer: Reducer<HashMap<usize, Vec<usize>>> =
                 Reducer::new(node_cache, |global, local| {
                     for (&key, val) in local {
@@ -96,6 +98,9 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                 },
                 thread_pool,
             );
+
+            let cache_hits = AtomicUsize::new(0);
+            let cache_misses = AtomicUsize::new(0);
 
             node_cache = reducer.get();
             let par_iter = (first_node_in_chunk..last_node_in_chunk + 1).into_par_iter();
@@ -149,11 +154,15 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         }
                     };
                     match node_cache.get(&node) {
-                        None => graph
-                            .successors(node)
-                            .into_iter()
-                            .for_each(|s| successors_func(s)),
+                        None => {
+                            cache_misses.fetch_add(1, Ordering::Relaxed);
+                            graph
+                                .successors(node)
+                                .into_iter()
+                                .for_each(|s| successors_func(s));
+                        }
                         Some(cache_successors) => {
+                            cache_hits.fetch_add(1, Ordering::Relaxed);
                             cache_successors.iter().for_each(|&s| successors_func(s))
                         }
                     };
@@ -174,13 +183,19 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                     let d = distance[node];
                     let sigma_node = sigma[node] as f64;
                     match node_cache.get(&node) {
-                        None => graph
-                            .successors(node)
-                            .into_iter()
-                            .for_each(|s| delta_func(s, d, node, sigma_node)),
-                        Some(cache_successors) => cache_successors
-                            .iter()
-                            .for_each(|&s| delta_func(s, d, node, sigma_node)),
+                        None => {
+                            cache_misses.fetch_add(1, Ordering::Relaxed);
+                            graph
+                                .successors(node)
+                                .into_iter()
+                                .for_each(|s| delta_func(s, d, node, sigma_node));
+                        }
+                        Some(cache_successors) => {
+                            cache_hits.fetch_add(1, Ordering::Relaxed);
+                            cache_successors
+                                .iter()
+                                .for_each(|&s| delta_func(s, d, node, sigma_node));
+                        }
                     };
                 }
 
@@ -193,6 +208,9 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                 }
             });
             pl.update_with_count(last_node_in_chunk + 1 - first_node_in_chunk);
+            println!("avg cache hits: {}", cache_hits.into_inner() / chunk_size);
+            println!("avg cache misses: {}", cache_misses.into_inner() / chunk_size);
+            println!("cache size: {}", node_cache.len());
         }
 
         pl.done_with_count(num_nodes);

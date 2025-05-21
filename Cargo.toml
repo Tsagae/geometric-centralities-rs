@@ -19,6 +19,7 @@ sync-cell-slice = "0.9.11"
 no-break = "0.1.2"
 openmp-reducer = "0.2.3"
 criterion = "0.5.1"
+itertools = "0.14.0"
 
 [profile.release]
 opt-level = 3             # like --release

@@ -1,11 +1,17 @@
 use dsi_progress_logger::ConcurrentProgressLog;
+use itertools::Itertools;
+use openmp_reducer::Reducer;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use rayon::ThreadPool;
 use std::cell::Cell;
+use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
+use webgraph_algo::prelude::breadth_first::EventPred;
+use webgraph_algo::prelude::Parallel;
 
 pub struct BetweennessCentrality<'a, G: RandomAccessGraph> {
     pub betweenness: Vec<f64>,
@@ -34,7 +40,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
 
     pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
         let num_nodes = self.graph.num_nodes();
-        //let thread_pool = &self.thread_pool;
+        let thread_pool = &self.thread_pool;
 
         pl.item_name("visit")
             .display_memory(false) //TODO: check if this can be enabled https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
@@ -47,82 +53,149 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         ));
 
         let betweenness: Mutex<Vec<f64>> = Mutex::new(vec![0.; num_nodes]);
-        (0..num_nodes).into_par_iter().for_each(|curr| {
-            let graph = self.graph;
-            let mut pl = pl.clone();
-            thread_local! {
-                static DISTANCE: Cell<Vec<i32>> = Cell::new(Vec::new());
-                static DELTA: Cell<Vec<f64>> = Cell::new(Vec::new());
-                static SIGMA: Cell<Vec<i64>> = Cell::new(Vec::new());
-                static QUEUE: Cell<Vec<usize>> = Cell::new(Vec::new());
-            };
-            let mut distance = DISTANCE.take();
-            let mut delta = DELTA.take();
-            let mut sigma = SIGMA.take();
-            let mut queue = QUEUE.take();
 
-            //let curr = atomic_counter.inc();
-            if graph.outdegree(curr) == 0 {
-                pl.update();
-                return;
-            }
-            distance.resize(num_nodes, -1);
-            sigma.resize(num_nodes, 0);
-            delta.resize(num_nodes, 0.);
-            queue.clear();
-
-            distance[curr] = 0;
-            sigma[curr] = 1;
-
-            queue.push(curr);
-            let mut overflow = false;
-
-            let mut i = 0;
-            while i != queue.len() {
-                let node = queue[i];
-                let d = distance[node];
-                debug_assert_ne!(d, -1);
-                let curr_sigma = sigma[node];
-                for s in graph.successors(node) {
-                    if distance[s] == -1 {
-                        distance[s] = d + 1;
-                        queue.push(s);
-                        //TODO: maybe use a different error handling. Not debug assert?
-                        debug_assert!(Self::check_overflow(&sigma, node, curr_sigma, s));
-                        overflow |= sigma[s] > i64::MAX - curr_sigma;
-                        sigma[s] += curr_sigma;
-                    } else if distance[s] == d + 1 {
-                        debug_assert!(Self::check_overflow(&sigma, node, curr_sigma, s));
-                        overflow |= sigma[s] > i64::MAX - curr_sigma;
-                        sigma[s] += curr_sigma;
+        let mut bfs = webgraph_algo::visits::breadth_first::ParFairPred::new(self.graph, 100);
+        let cache_node_capacity = 10000;
+        for mut chunk in (0..num_nodes).chunks(100).into_iter() {
+            let first_node_in_chunk = chunk.next().unwrap();
+            let mut node_cache: HashMap<usize, Vec<usize>> = HashMap::new();
+            let reducer: Reducer<HashMap<usize, Vec<usize>>> =
+                Reducer::new(node_cache, |global, local| {
+                    for (&key, val) in local {
+                        global.entry(key).or_default().extend(val);
                     }
+                });
+
+            bfs.par_visit_with(
+                [first_node_in_chunk],
+                reducer.share(),
+                |shared_reducer, event| {
+                    let cache = shared_reducer.as_mut();
+                    match event {
+                        EventPred::Init { .. } => {}
+                        EventPred::Unknown {
+                            node,
+                            pred,
+                            distance: _,
+                        } => {
+                            if !cache.contains_key(&pred) && cache.len() >= cache_node_capacity {
+                                return ControlFlow::<()>::Break(());
+                            }
+                            cache.entry(pred).or_default().push(node);
+                        }
+                        EventPred::Known { node, pred } => {
+                            if !cache.contains_key(&pred) && cache.len() >= cache_node_capacity {
+                                return ControlFlow::<()>::Break(());
+                            }
+                            cache.entry(pred).or_default().push(node);
+                        }
+                        EventPred::Done { .. } => {}
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+                thread_pool,
+            );
+
+            node_cache = reducer.get();
+            let par_iter = (first_node_in_chunk..chunk.last().unwrap() + 1).into_par_iter();
+            par_iter.for_each(|curr| {
+                thread_local! {
+                    static DISTANCE: Cell<Vec<i32>> = Cell::new(Vec::new());
+                    static DELTA: Cell<Vec<f64>> = Cell::new(Vec::new());
+                    static SIGMA: Cell<Vec<i64>> = Cell::new(Vec::new());
+                    static QUEUE: Cell<Vec<usize>> = Cell::new(Vec::new());
                 }
-                i += 1;
-            }
 
-            if overflow {
-                panic!("Path count overflow")
-            }
+                let graph = self.graph;
+                let mut pl = pl.clone();
 
-            for &node in queue[1..].iter().rev() {
-                let d = distance[node];
-                let sigma_node = sigma[node] as f64;
-                for s in graph.successors(node) {
+                let mut distance = DISTANCE.take();
+                let mut delta = DELTA.take();
+                let mut sigma = SIGMA.take();
+                let mut queue = QUEUE.take();
+
+                //let curr = atomic_counter.inc();
+                if graph.outdegree(curr) == 0 {
+                    pl.update();
+                    return;
+                }
+                distance.resize(num_nodes, -1);
+                sigma.resize(num_nodes, 0);
+                delta.resize(num_nodes, 0.);
+                queue.clear();
+
+                distance[curr] = 0;
+                sigma[curr] = 1;
+
+                queue.push(curr);
+                let mut overflow = false;
+
+                let mut i = 0;
+                while i != queue.len() {
+                    let node = queue[i];
+                    let d = distance[node];
+                    debug_assert_ne!(d, -1);
+                    let curr_sigma = sigma[node];
+                    let mut successors_func = |s| {
+                        if distance[s] == -1 {
+                            distance[s] = d + 1;
+                            queue.push(s);
+                            //TODO: maybe use a different error handling. Not debug assert?
+                            debug_assert!(Self::check_overflow(&sigma, node, curr_sigma, s));
+                            overflow |= sigma[s] > i64::MAX - curr_sigma;
+                            sigma[s] += curr_sigma;
+                        } else if distance[s] == d + 1 {
+                            debug_assert!(Self::check_overflow(&sigma, node, curr_sigma, s));
+                            overflow |= sigma[s] > i64::MAX - curr_sigma;
+                            sigma[s] += curr_sigma;
+                        }
+                    };
+                    match node_cache.get(&node) {
+                        None => graph
+                            .successors(node)
+                            .into_iter()
+                            .for_each(|s| successors_func(s)),
+                        Some(cache_successors) => {
+                            cache_successors.iter().for_each(|&s| successors_func(s))
+                        }
+                    };
+                    i += 1;
+                }
+
+                if overflow {
+                    panic!("Path count overflow")
+                }
+
+                let mut delta_func = |s, d, node, sigma_node| {
                     if distance[s] == d + 1 {
                         delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
                     }
-                }
-            }
+                };
 
-            {
-                //TODO: try lock, if it fails update betweenness at next step after overflow check
-                let mut lock_betweenness = betweenness.lock().unwrap();
-                for &node in &queue[1..] {
-                    lock_betweenness[node] += delta[node];
+                for &node in queue[1..].iter().rev() {
+                    let d = distance[node];
+                    let sigma_node = sigma[node] as f64;
+                    match node_cache.get(&node) {
+                        None => graph
+                            .successors(node)
+                            .into_iter()
+                            .for_each(|s| delta_func(s, d, node, sigma_node)),
+                        Some(cache_successors) => cache_successors
+                            .iter()
+                            .for_each(|&s| delta_func(s, d, node, sigma_node)),
+                    };
                 }
-            }
-            pl.update();
-        });
+
+                {
+                    //TODO: try lock, if it fails update betweenness at next step after overflow check
+                    let mut lock_betweenness = betweenness.lock().unwrap();
+                    for &node in &queue[1..] {
+                        lock_betweenness[node] += delta[node];
+                    }
+                }
+                pl.update();
+            });
+        }
 
         pl.done_with_count(num_nodes);
         self.betweenness = betweenness.into_inner().unwrap();

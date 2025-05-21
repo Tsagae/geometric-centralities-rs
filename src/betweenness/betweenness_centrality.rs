@@ -55,8 +55,8 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         let betweenness: Mutex<Vec<f64>> = Mutex::new(vec![0.; num_nodes]);
 
         let mut bfs = webgraph_algo::visits::breadth_first::ParFairPred::new(self.graph, 100);
-        let cache_node_capacity = 10000;
-        for mut chunk in (0..num_nodes).chunks(100).into_iter() {
+        let cache_node_capacity = 30000;
+        for mut chunk in (0..num_nodes).chunks(1000).into_iter() {
             let first_node_in_chunk = chunk.next().unwrap();
             let last_node_in_chunk = chunk.last().unwrap();
             let mut node_cache: HashMap<usize, Vec<usize>> = HashMap::new();

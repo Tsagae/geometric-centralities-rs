@@ -68,7 +68,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         global.entry(key).or_default().extend(val);
                     }
                 });
-
+            bfs.reset();
             bfs.par_visit_with(
                 [first_node_in_chunk],
                 reducer.share(),

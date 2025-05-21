@@ -27,6 +27,10 @@ overflow-checks = false   # Disable integer overflow checks.
 debug-assertions = false  # Enables debug assertions.
 codegen-units = 1         # slower compile times, but maybe better perf
 
+[profile.profiling]
+inherits = "release"
+debug = true
+
 [[example]]
 name = "bench_geometric_centralities"
 

@@ -46,7 +46,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
 
         let atomic_counter = atomic_counter::ConsistentCounter::new(0);
         let betweenness: Mutex<Vec<f64>> = Mutex::new(vec![0.; num_nodes]);
-
+        
         thread_pool.in_place_scope(|scope| {
             for _ in 0..thread_pool.current_num_threads() {
                 scope.spawn(|_| {
@@ -56,6 +56,8 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                     let mut delta: Vec<f64> = vec![0.; num_nodes];
                     let mut sigma: Vec<i64> = vec![0; num_nodes];
                     let mut queue = Vec::new();
+                    let mut successors_cache: Vec<Vec<usize>> =
+                        vec![Vec::with_capacity(3); num_nodes];
 
                     loop {
                         let curr = atomic_counter.inc();
@@ -80,11 +82,15 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                             let node = queue[i];
                             let d = distance[node];
                             debug_assert_ne!(d, -1);
+                            unsafe {
+                                successors_cache[node].set_len(0);
+                            }
                             let curr_sigma = sigma[node];
                             for s in graph.successors(node) {
                                 if distance[s] == -1 {
                                     distance[s] = d + 1;
                                     queue.push(s);
+                                    successors_cache[node].push(s);
                                     //TODO: maybe use a different error handling. Not debug assert?
                                     debug_assert!(Self::check_overflow(
                                         &sigma, node, curr_sigma, s
@@ -110,7 +116,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                             let d = distance[node];
                             let sigma_node = sigma[node] as f64;
                             delta[node] = 0.;
-                            for s in graph.successors(node) {
+                            for &s in &successors_cache[node] {
                                 if distance[s] == d + 1 {
                                     delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
                                 }

@@ -1,6 +1,8 @@
-use atomic_counter::AtomicCounter;
 use dsi_progress_logger::ConcurrentProgressLog;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
 use rayon::ThreadPool;
+use std::cell::Cell;
 use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
@@ -32,7 +34,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
 
     pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
         let num_nodes = self.graph.num_nodes();
-        let thread_pool = &self.thread_pool;
+        //let thread_pool = &self.thread_pool;
 
         pl.item_name("visit")
             .display_memory(false) //TODO: check if this can be enabled https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
@@ -44,90 +46,82 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
             &self.thread_pool.current_num_threads()
         ));
 
-        let atomic_counter = atomic_counter::ConsistentCounter::new(0);
         let betweenness: Mutex<Vec<f64>> = Mutex::new(vec![0.; num_nodes]);
+        (0..num_nodes).into_par_iter().for_each(|curr| {
+            let graph = self.graph;
+            let mut pl = pl.clone();
+            thread_local! {
+                static DISTANCE: Cell<Vec<i32>> = Cell::new(Vec::new());
+                static DELTA: Cell<Vec<f64>> = Cell::new(Vec::new());
+                static SIGMA: Cell<Vec<i64>> = Cell::new(Vec::new());
+                static QUEUE: Cell<Vec<usize>> = Cell::new(Vec::new());
+            };
+            let mut distance = DISTANCE.take();
+            let mut delta = DELTA.take();
+            let mut sigma = SIGMA.take();
+            let mut queue = QUEUE.take();
 
-        thread_pool.in_place_scope(|scope| {
-            for _ in 0..thread_pool.current_num_threads() {
-                scope.spawn(|_| {
-                    let graph = self.graph;
-                    let mut pl = pl.clone();
-                    let mut distance: Vec<i32> = vec![-1; num_nodes];
-                    let mut delta: Vec<f64> = vec![0.; num_nodes];
-                    let mut sigma: Vec<i64> = vec![0; num_nodes];
-                    let mut queue = Vec::new();
-
-                    loop {
-                        let curr = atomic_counter.inc();
-                        if curr >= num_nodes {
-                            break;
-                        }
-                        if graph.outdegree(curr) == 0 {
-                            pl.update();
-                            continue;
-                        }
-                        queue.clear();
-                        distance.fill(-1);
-                        sigma.fill(0);
-                        distance[curr] = 0;
-                        sigma[curr] = 1;
-
-                        queue.push(curr);
-                        let mut overflow = false;
-
-                        let mut i = 0;
-                        while i != queue.len() {
-                            let node = queue[i];
-                            let d = distance[node];
-                            debug_assert_ne!(d, -1);
-                            let curr_sigma = sigma[node];
-                            for s in graph.successors(node) {
-                                if distance[s] == -1 {
-                                    distance[s] = d + 1;
-                                    queue.push(s);
-                                    //TODO: maybe use a different error handling. Not debug assert?
-                                    debug_assert!(Self::check_overflow(
-                                        &sigma, node, curr_sigma, s
-                                    ));
-                                    overflow |= sigma[s] > i64::MAX - curr_sigma;
-                                    sigma[s] += curr_sigma;
-                                } else if distance[s] == d + 1 {
-                                    debug_assert!(Self::check_overflow(
-                                        &sigma, node, curr_sigma, s
-                                    ));
-                                    overflow |= sigma[s] > i64::MAX - curr_sigma;
-                                    sigma[s] += curr_sigma;
-                                }
-                            }
-                            i += 1;
-                        }
-
-                        if overflow {
-                            panic!("Path count overflow")
-                        }
-
-                        for &node in queue[1..].iter().rev() {
-                            let d = distance[node];
-                            let sigma_node = sigma[node] as f64;
-                            delta[node] = 0.;
-                            for s in graph.successors(node) {
-                                if distance[s] == d + 1 {
-                                    delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
-                                }
-                            }
-                        }
-
-                        {
-                            //TODO: try lock, if it fails update betweenness at next step after overflow check
-                            let mut lock_betweenness = betweenness.lock().unwrap();
-                            for &node in &queue[1..] {
-                                lock_betweenness[node] += delta[node];
-                            }
-                        }
-                        pl.update();
-                    }
-                });
+            //let curr = atomic_counter.inc();
+            if graph.outdegree(curr) == 0 {
+                pl.update();
+                return;
             }
+            distance.resize(num_nodes, -1);
+            sigma.resize(num_nodes, 0);
+            delta.resize(num_nodes, 0.);
+            queue.clear();
+
+            distance[curr] = 0;
+            sigma[curr] = 1;
+
+            queue.push(curr);
+            let mut overflow = false;
+
+            let mut i = 0;
+            while i != queue.len() {
+                let node = queue[i];
+                let d = distance[node];
+                debug_assert_ne!(d, -1);
+                let curr_sigma = sigma[node];
+                for s in graph.successors(node) {
+                    if distance[s] == -1 {
+                        distance[s] = d + 1;
+                        queue.push(s);
+                        //TODO: maybe use a different error handling. Not debug assert?
+                        debug_assert!(Self::check_overflow(&sigma, node, curr_sigma, s));
+                        overflow |= sigma[s] > i64::MAX - curr_sigma;
+                        sigma[s] += curr_sigma;
+                    } else if distance[s] == d + 1 {
+                        debug_assert!(Self::check_overflow(&sigma, node, curr_sigma, s));
+                        overflow |= sigma[s] > i64::MAX - curr_sigma;
+                        sigma[s] += curr_sigma;
+                    }
+                }
+                i += 1;
+            }
+
+            if overflow {
+                panic!("Path count overflow")
+            }
+
+            for &node in queue[1..].iter().rev() {
+                let d = distance[node];
+                let sigma_node = sigma[node] as f64;
+                for s in graph.successors(node) {
+                    if distance[s] == d + 1 {
+                        delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
+                    }
+                }
+            }
+
+            {
+                //TODO: try lock, if it fails update betweenness at next step after overflow check
+                let mut lock_betweenness = betweenness.lock().unwrap();
+                for &node in &queue[1..] {
+                    lock_betweenness[node] += delta[node];
+                }
+            }
+            pl.update();
         });
 
         pl.done_with_count(num_nodes);

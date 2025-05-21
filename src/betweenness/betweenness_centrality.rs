@@ -79,7 +79,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         while i != queue.len() {
                             let node = queue[i];
                             let d = distance[node];
-                            assert_ne!(d, -1);
+                            debug_assert_ne!(d, -1);
                             let curr_sigma = sigma[node];
                             for s in graph.successors(node) {
                                 if distance[s] == -1 {

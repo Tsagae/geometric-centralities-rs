@@ -1,8 +1,8 @@
-use dsi_progress_logger::ConcurrentProgressLog;
+use dsi_progress_logger::{ConcurrentProgressLog, ProgressLog};
 use itertools::Itertools;
 use openmp_reducer::Reducer;
-use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator};
 use rayon::ThreadPool;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -58,6 +58,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         let cache_node_capacity = 10000;
         for mut chunk in (0..num_nodes).chunks(100).into_iter() {
             let first_node_in_chunk = chunk.next().unwrap();
+            let last_node_in_chunk = chunk.last().unwrap();
             let mut node_cache: HashMap<usize, Vec<usize>> = HashMap::new();
             let reducer: Reducer<HashMap<usize, Vec<usize>>> =
                 Reducer::new(node_cache, |global, local| {
@@ -97,7 +98,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
             );
 
             node_cache = reducer.get();
-            let par_iter = (first_node_in_chunk..chunk.last().unwrap() + 1).into_par_iter();
+            let par_iter = (first_node_in_chunk..last_node_in_chunk + 1).into_par_iter();
             par_iter.for_each(|curr| {
                 thread_local! {
                     static DISTANCE: Cell<Vec<i32>> = Cell::new(Vec::new());
@@ -107,16 +108,13 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                 }
 
                 let graph = self.graph;
-                let mut pl = pl.clone();
 
                 let mut distance = DISTANCE.take();
                 let mut delta = DELTA.take();
                 let mut sigma = SIGMA.take();
                 let mut queue = QUEUE.take();
 
-                //let curr = atomic_counter.inc();
                 if graph.outdegree(curr) == 0 {
-                    pl.update();
                     return;
                 }
                 distance.resize(num_nodes, -1);
@@ -193,8 +191,8 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         lock_betweenness[node] += delta[node];
                     }
                 }
-                pl.update();
             });
+            pl.update_with_count(last_node_in_chunk + 1 - first_node_in_chunk);
         }
 
         pl.done_with_count(num_nodes);

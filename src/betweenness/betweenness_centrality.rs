@@ -7,7 +7,6 @@ use rayon::ThreadPool;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
@@ -99,8 +98,8 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                 thread_pool,
             );
 
-            let cache_hits = AtomicUsize::new(0);
-            let cache_misses = AtomicUsize::new(0);
+            //let cache_hits = AtomicUsize::new(0);
+            //let cache_misses = AtomicUsize::new(0);
 
             node_cache = reducer.get();
             let par_iter = (first_node_in_chunk..last_node_in_chunk + 1).into_par_iter();
@@ -155,14 +154,14 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                     };
                     match node_cache.get(&node) {
                         None => {
-                            cache_misses.fetch_add(1, Ordering::Relaxed);
+                            //cache_misses.fetch_add(1, Ordering::Relaxed);
                             graph
                                 .successors(node)
                                 .into_iter()
                                 .for_each(|s| successors_func(s));
                         }
                         Some(cache_successors) => {
-                            cache_hits.fetch_add(1, Ordering::Relaxed);
+                            //cache_hits.fetch_add(1, Ordering::Relaxed);
                             cache_successors.iter().for_each(|&s| successors_func(s))
                         }
                     };
@@ -184,14 +183,14 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                     let sigma_node = sigma[node] as f64;
                     match node_cache.get(&node) {
                         None => {
-                            cache_misses.fetch_add(1, Ordering::Relaxed);
+                            //cache_misses.fetch_add(1, Ordering::Relaxed);
                             graph
                                 .successors(node)
                                 .into_iter()
                                 .for_each(|s| delta_func(s, d, node, sigma_node));
                         }
                         Some(cache_successors) => {
-                            cache_hits.fetch_add(1, Ordering::Relaxed);
+                            //cache_hits.fetch_add(1, Ordering::Relaxed);
                             cache_successors
                                 .iter()
                                 .for_each(|&s| delta_func(s, d, node, sigma_node));
@@ -208,9 +207,9 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                 }
             });
             pl.update_with_count(last_node_in_chunk + 1 - first_node_in_chunk);
-            println!("avg cache hits: {}", cache_hits.into_inner() / chunk_size);
-            println!("avg cache misses: {}", cache_misses.into_inner() / chunk_size);
-            println!("cache size: {}", node_cache.len());
+            //println!("avg cache hits: {}", cache_hits.into_inner() / chunk_size);
+            //println!("avg cache misses: {}", cache_misses.into_inner() / chunk_size);
+            //println!("cache size: {}", node_cache.len());
         }
 
         pl.done_with_count(num_nodes);

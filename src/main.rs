@@ -15,6 +15,9 @@ struct MainArgs {
     #[arg(short = 'p', long)]
     path: String,
 
+    #[arg(short = 's', long)]
+    save: bool,
+
     #[arg(long)]
     parallel: bool,
 
@@ -42,13 +45,16 @@ fn main() -> anyhow::Result<()> {
     let graph_name = args.path.split("/").last().unwrap();
     let path = env::current_dir()?;
     let current_path = path.display().to_string();
+    let mut results_dir = current_path.clone();
 
-    println!("current path: {current_path}");
-    let results_dir = format!("{current_path}/{graph_name}_rustresults");
-    println!("results_dir: {results_dir}");
-    std::fs::create_dir(&results_dir).expect("Can't create directory. It may already exist");
+    if args.save {
+        println!("current path: {current_path}");
+        results_dir = format!("{current_path}/{graph_name}_rustresults");
+        println!("results_dir: {results_dir}");
+        std::fs::create_dir(&results_dir).expect("Can't create directory. It may already exist");
+    }
 
-    let graph = BvGraph::with_basename(args.path)
+    let graph = BvGraph::with_basename(&args.path)
         .load()
         .expect("Failed loading graph");
 
@@ -63,18 +69,22 @@ fn main() -> anyhow::Result<()> {
             geom.compute(&mut ConcurrentWrapper::new());
         }
 
-        write_nums_to_file(&results_dir, "closeness", geom.closeness.iter());
-        write_nums_to_file(&results_dir, "lin", geom.lin.iter());
-        write_nums_to_file(&results_dir, "exponential", geom.exponential.iter());
-        write_nums_to_file(&results_dir, "harmonic", geom.harmonic.iter());
-        write_nums_to_file(&results_dir, "reachable", geom.reachable.iter());
+        if args.save {
+            write_nums_to_file(&results_dir, "closeness", geom.closeness.iter());
+            write_nums_to_file(&results_dir, "lin", geom.lin.iter());
+            write_nums_to_file(&results_dir, "exponential", geom.exponential.iter());
+            write_nums_to_file(&results_dir, "harmonic", geom.harmonic.iter());
+            write_nums_to_file(&results_dir, "reachable", geom.reachable.iter());
+        }
     }
 
     if args.betweenness {
-        let mut betweenness = BetweennessCentrality::new(&graph, args.threads);
-        println!("Computing betweenness centrality with sequential visit");
-        betweenness.compute(&mut ConcurrentWrapper::new());
-        write_nums_to_file(&results_dir, "betweenness", betweenness.betweenness.iter());
+        let mut betw = BetweennessCentrality::new(&graph, args.threads);
+        betw.compute(&mut ConcurrentWrapper::with_threshold(500));
+        
+        if args.save {
+            write_nums_to_file(&results_dir, "betweenness", betw.betweenness.iter());
+        }
     }
     info!("Done");
 

@@ -7,6 +7,8 @@ use rayon::ThreadPool;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Mutex;
 use std::thread::available_parallelism;
 use common_traits::SequenceGrowable;
@@ -57,7 +59,8 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
 
         let mut bfs = webgraph_algo::visits::breadth_first::ParFairPred::new(self.graph, 100);
         let chunk_size = 1000;
-        let cache_node_capacity = 30000;
+        let cache_max_distance = 100;
+        
         let mut node_cache: Vec<Option<Vec<usize>>> = Vec::new();
         node_cache.resize(num_nodes, None);
         for mut chunk in (0..num_nodes).chunks(chunk_size).into_iter() {
@@ -91,18 +94,15 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         EventPred::Unknown {
                             node,
                             pred,
-                            distance: _,
+                            distance,
                         } => {
-                            if !cache.contains_key(&pred) && cache.len() >= cache_node_capacity {
+                            if distance > cache_max_distance {
                                 return ControlFlow::<()>::Break(());
                             }
-                            cache.entry(pred).or_default().push(node);
+                            cache.entry(node).or_default().extend(self.graph.successors(node).into_iter());
                         }
-                        EventPred::Known { node, pred } => {
-                            if !cache.contains_key(&pred) && cache.len() >= cache_node_capacity {
-                                return ControlFlow::<()>::Break(());
-                            }
-                            cache.entry(pred).or_default().push(node);
+                        EventPred::Known { node, pred} => {
+                            //cache.entry(pred).or_default().push(node);
                         }
                         EventPred::Done { .. } => {}
                     }

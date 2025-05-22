@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::thread::available_parallelism;
+use common_traits::SequenceGrowable;
 use webgraph::traits::RandomAccessGraph;
 use webgraph_algo::prelude::breadth_first::EventPred;
 use webgraph_algo::prelude::Parallel;
@@ -57,14 +58,26 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         let mut bfs = webgraph_algo::visits::breadth_first::ParFairPred::new(self.graph, 100);
         let chunk_size = 1000;
         let cache_node_capacity = 30000;
+        let mut node_cache: Vec<Option<Vec<usize>>> = Vec::new();
+        node_cache.resize(num_nodes, None);
         for mut chunk in (0..num_nodes).chunks(chunk_size).into_iter() {
+            node_cache.fill(None);
             let first_node_in_chunk = chunk.next().unwrap();
             let last_node_in_chunk = chunk.last().unwrap();
-            let mut node_cache: HashMap<usize, Vec<usize>> = HashMap::new(); // TODO: Change this with Vec<Option<Vec<usize>>> of size num_of_nodes
-            let reducer: Reducer<HashMap<usize, Vec<usize>>> =
+            let reducer: Reducer<Vec<Option<Vec<usize>>>, HashMap<usize, Vec<usize>>> =
                 Reducer::new(node_cache, |global, local| {
                     for (&key, val) in local {
-                        global.entry(key).or_default().extend(val);
+                        if global[key] == None {
+                            global[key] = Some(val.clone());
+                        } else {
+                            for local_val in val {
+                                let mut cache_succ_list = global[key].take().unwrap();
+                                if !cache_succ_list.contains(local_val) {
+                                    cache_succ_list.push(*local_val);
+                                }
+                                global[key] = Some(cache_succ_list);
+                            }
+                        }
                     }
                 });
             bfs.reset();
@@ -97,9 +110,6 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                 },
                 thread_pool,
             );
-
-            //let cache_hits = AtomicUsize::new(0);
-            //let cache_misses = AtomicUsize::new(0);
 
             node_cache = reducer.get();
             let par_iter = (first_node_in_chunk..last_node_in_chunk + 1).into_par_iter();
@@ -152,7 +162,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                             sigma[s] += curr_sigma;
                         }
                     };
-                    match node_cache.get(&node) {
+                    match &node_cache[node] {
                         None => {
                             //cache_misses.fetch_add(1, Ordering::Relaxed);
                             graph
@@ -181,7 +191,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                 for &node in queue[1..].iter().rev() {
                     let d = distance[node];
                     let sigma_node = sigma[node] as f64;
-                    match node_cache.get(&node) {
+                    match &node_cache[node] {
                         None => {
                             //cache_misses.fetch_add(1, Ordering::Relaxed);
                             graph

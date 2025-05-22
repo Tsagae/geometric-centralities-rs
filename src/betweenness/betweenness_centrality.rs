@@ -1,8 +1,9 @@
 use dsi_progress_logger::{ConcurrentProgressLog, ProgressLog};
 use itertools::Itertools;
+use log::info;
 use openmp_reducer::Reducer;
-use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator};
 use rayon::ThreadPool;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -56,7 +57,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
 
         let mut bfs = webgraph_algo::visits::breadth_first::ParFairPred::new(self.graph, 100);
         let chunk_size = 1000;
-        let cache_max_distance = 100;
+        let cache_max_distance = 5;
 
         let mut node_cache: Vec<Option<Vec<usize>>> = Vec::new();
         node_cache.resize(num_nodes, None);
@@ -96,10 +97,12 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                             if distance > cache_max_distance {
                                 return ControlFlow::<()>::Break(());
                             }
-                            cache
-                                .entry(node)
-                                .or_default()
-                                .extend(self.graph.successors(node).into_iter());
+                            cache.entry(node).or_insert_with(|| {
+                                self.graph
+                                    .successors(node)
+                                    .into_iter()
+                                    .collect::<Vec<usize>>()
+                            });
                         }
                         EventPred::Known { .. } => {}
                         EventPred::Done { .. } => {}
@@ -110,6 +113,26 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
             );
 
             node_cache = reducer.get();
+
+            let arcs_in_cache: usize = node_cache
+                .par_iter()
+                .map(|v| match v {
+                    None => 0,
+                    Some(v) => v.iter().len(),
+                })
+                .sum();
+
+            let nodes_in_cache: usize = node_cache
+                .par_iter()
+                .map(|v| match v {
+                    None => 0,
+                    Some(_) => 1,
+                })
+                .sum();
+
+            info!("arcs in cache: {}", arcs_in_cache);
+            info!("nodes in cache: {}", nodes_in_cache);
+
             let par_iter = (first_node_in_chunk..last_node_in_chunk + 1).into_par_iter();
             par_iter.for_each(|curr| {
                 let mut pl = pl.clone();
@@ -214,7 +237,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         lock_betweenness[node] += delta[node];
                     }
                 }
-                pl.update_and_display();
+                pl.update();
             });
             //println!("avg cache hits: {}", cache_hits.into_inner() / chunk_size);
             //println!("avg cache misses: {}", cache_misses.into_inner() / chunk_size);

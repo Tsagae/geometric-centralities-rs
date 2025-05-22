@@ -1,6 +1,6 @@
 use clap::Parser;
 use common_traits::Sequence;
-use dsi_progress_logger::{progress_logger, ConcurrentWrapper, ProgressLogger};
+use dsi_progress_logger::{concurrent_progress_logger, progress_logger, ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::betweenness::BetweennessCentrality;
 use geometric_centralities::geometric::GeometricCentralities;
 use log::info;
@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
 
     if args.betweenness {
         let mut betw = BetweennessCentrality::new(&graph, args.threads);
-        betw.compute(&mut progress_logger![]);
+        betw.compute(&mut ConcurrentWrapper::with_threshold(1));
         
         if args.save {
             write_nums_to_file(&results_dir, "betweenness", betw.betweenness.iter());

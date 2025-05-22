@@ -1,4 +1,4 @@
-use dsi_progress_logger::ProgressLog;
+use dsi_progress_logger::{ConcurrentProgressLog, ProgressLog};
 use itertools::Itertools;
 use openmp_reducer::Reducer;
 use rayon::iter::IntoParallelIterator;
@@ -7,11 +7,8 @@ use rayon::ThreadPool;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Mutex;
 use std::thread::available_parallelism;
-use common_traits::SequenceGrowable;
 use webgraph::traits::RandomAccessGraph;
 use webgraph_algo::prelude::breadth_first::EventPred;
 use webgraph_algo::prelude::Parallel;
@@ -41,7 +38,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         }
     }
 
-    pub fn compute(&mut self, pl: &mut impl ProgressLog) {
+    pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
         let num_nodes = self.graph.num_nodes();
         let thread_pool = &self.thread_pool;
 
@@ -60,7 +57,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
         let mut bfs = webgraph_algo::visits::breadth_first::ParFairPred::new(self.graph, 100);
         let chunk_size = 1000;
         let cache_max_distance = 100;
-        
+
         let mut node_cache: Vec<Option<Vec<usize>>> = Vec::new();
         node_cache.resize(num_nodes, None);
         for mut chunk in (0..num_nodes).chunks(chunk_size).into_iter() {
@@ -93,17 +90,18 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         EventPred::Init { .. } => {}
                         EventPred::Unknown {
                             node,
-                            pred,
+                            pred: _,
                             distance,
                         } => {
                             if distance > cache_max_distance {
                                 return ControlFlow::<()>::Break(());
                             }
-                            cache.entry(node).or_default().extend(self.graph.successors(node).into_iter());
+                            cache
+                                .entry(node)
+                                .or_default()
+                                .extend(self.graph.successors(node).into_iter());
                         }
-                        EventPred::Known { node, pred} => {
-                            //cache.entry(pred).or_default().push(node);
-                        }
+                        EventPred::Known { .. } => {}
                         EventPred::Done { .. } => {}
                     }
                     ControlFlow::<()>::Continue(())
@@ -114,6 +112,7 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
             node_cache = reducer.get();
             let par_iter = (first_node_in_chunk..last_node_in_chunk + 1).into_par_iter();
             par_iter.for_each(|curr| {
+                let mut pl = pl.clone();
                 thread_local! {
                     static DISTANCE: Cell<Vec<i32>> = Cell::new(Vec::new());
                     static DELTA: Cell<Vec<f64>> = Cell::new(Vec::new());
@@ -215,8 +214,8 @@ impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
                         lock_betweenness[node] += delta[node];
                     }
                 }
+                pl.update_and_display();
             });
-            pl.update_with_count(last_node_in_chunk + 1 - first_node_in_chunk);
             //println!("avg cache hits: {}", cache_hits.into_inner() / chunk_size);
             //println!("avg cache misses: {}", cache_misses.into_inner() / chunk_size);
             //println!("cache size: {}", node_cache.len());

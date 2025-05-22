@@ -7,7 +7,8 @@ use log::info;
 use std::env;
 use std::fmt::Display;
 use std::io::Write;
-use webgraph::prelude::BvGraph;
+use webgraph::prelude::{BvGraph, VecGraph};
+use webgraph::traits::RandomAccessGraph;
 
 #[derive(Parser, Debug)]
 #[command(about = "Benchmarks geometric centralities", long_about = None)]
@@ -89,6 +90,19 @@ fn main() -> anyhow::Result<()> {
     info!("Done");
 
     Ok(())
+}
+
+fn decompress_graph(g: impl RandomAccessGraph) -> VecGraph {
+    let mut vg = VecGraph::new();
+    for node in 0..g.num_nodes() {
+        vg.add_node(node);
+        vg.add_arcs(
+            g.successors(node)
+                .into_iter()
+                .map(|successor| (node, successor)),
+        );
+    }
+    vg
 }
 
 fn write_nums_to_file<T: Display>(base_path: &str, filename: &str, nums: impl Iterator<Item = T>) {

@@ -1,7 +1,6 @@
 use clap::Parser;
 use common_traits::Sequence;
-use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
-use geometric_centralities::betweenness::BetweennessCentrality;
+use dsi_progress_logger::{concurrent_progress_logger, no_logging, ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::geometric::GeometricCentralities;
 use log::info;
 use std::env;
@@ -9,6 +8,7 @@ use std::fmt::Display;
 use std::io::Write;
 use webgraph::prelude::{BvGraph, VecGraph};
 use webgraph::traits::RandomAccessGraph;
+use geometric_centralities::betweenness::betweenness_centrality;
 
 #[derive(Parser, Debug)]
 #[command(about = "Benchmarks geometric centralities", long_about = None)]
@@ -80,11 +80,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     if args.betweenness {
-        let mut betw = BetweennessCentrality::new(&graph, args.threads);
-        betw.compute(&mut ConcurrentWrapper::with_threshold(500));
-        
+        let betweenness = betweenness_centrality::compute(&graph, args.threads, &mut ConcurrentWrapper::with_threshold(1));
+
         if args.save {
-            write_nums_to_file(&results_dir, "betweenness", betw.betweenness.iter());
+            write_nums_to_file(&results_dir, "betweenness", betweenness.iter());
         }
     }
     info!("Done");

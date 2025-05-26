@@ -1,150 +1,131 @@
 use atomic_counter::AtomicCounter;
-use dsi_progress_logger::ConcurrentProgressLog;
-use rayon::ThreadPool;
+use dsi_progress_logger::ProgressLog;
 use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
 
-pub struct BetweennessCentrality<'a, G: RandomAccessGraph> {
-    pub betweenness: Vec<f64>,
-    graph: &'a G,
-    thread_pool: ThreadPool,
+pub fn compute(
+    graph: &(impl RandomAccessGraph + Sync),
+    num_of_threads: usize,
+    pl: &mut impl ProgressLog,
+) -> Box<[f64]> {
+    let num_nodes = graph.num_nodes();
+
+    let num_threads = if num_of_threads == 0 {
+        usize::from(available_parallelism().unwrap())
+    } else {
+        num_of_threads
+    };
+    let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
+    thread_pool_builder = thread_pool_builder.num_threads(num_threads);
+    let thread_pool = thread_pool_builder
+        .build()
+        .expect("Error in building thread pool");
+
+    let mut cpl = pl.concurrent();
+
+    cpl.item_name("visit").expected_updates(Some(num_nodes));
+
+    cpl.start(format!(
+        "Computing betweenness centrality with {} threads...",
+        &thread_pool.current_num_threads()
+    ));
+
+    let atomic_counter = atomic_counter::RelaxedCounter::new(0);
+    let betweenness = Mutex::new(vec![0.; num_nodes].into_boxed_slice());
+
+    thread_pool.in_place_scope(|scope| {
+        for _ in 0..thread_pool.current_num_threads() {
+            scope.spawn(|s| {
+                let mut cpl = cpl.clone();
+                let mut distance = vec![-1i32; num_nodes].into_boxed_slice();
+                let mut delta = vec![0f64; num_nodes].into_boxed_slice();
+                let mut sigma = vec![0i64; num_nodes].into_boxed_slice();
+                let mut queue = Vec::new();
+
+                loop {
+                    let curr = atomic_counter.inc();
+                    if curr >= num_nodes {
+                        break;
+                    }
+                    if graph.outdegree(curr) == 0 {
+                        cpl.update();
+                        continue;
+                    }
+                    queue.clear();
+                    distance.fill(-1);
+                    sigma.fill(0);
+                    distance[curr] = 0;
+                    sigma[curr] = 1;
+
+                    queue.push(curr);
+                    let mut overflow = false;
+
+                    let mut i = 0;
+                    while i != queue.len() {
+                        let node = queue[i];
+                        let d = distance[node];
+                        debug_assert_ne!(d, -1);
+                        let curr_sigma = sigma[node];
+                        for s in graph.successors(node) {
+                            if distance[s] == -1 {
+                                distance[s] = d + 1;
+                                queue.push(s);
+                                //TODO: maybe use a different error handling. Not debug assert?
+                                debug_assert!(check_overflow(&sigma, node, curr_sigma, s));
+                                overflow |= sigma[s] > i64::MAX - curr_sigma;
+                                sigma[s] += curr_sigma;
+                            } else if distance[s] == d + 1 {
+                                debug_assert!(check_overflow(&sigma, node, curr_sigma, s));
+                                overflow |= sigma[s] > i64::MAX - curr_sigma;
+                                sigma[s] += curr_sigma;
+                            }
+                        }
+                        i += 1;
+                    }
+
+                    if overflow {
+                        panic!("Overflow error");
+                        //return Err(BetweennessError::PathCountOverflow);
+                    }
+
+                    for &node in queue[1..].iter().rev() {
+                        let d = distance[node];
+                        let sigma_node = sigma[node] as f64;
+                        delta[node] = 0.;
+                        for s in graph.successors(node) {
+                            if distance[s] == d + 1 {
+                                delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
+                            }
+                        }
+                    }
+
+                    {
+                        let mut lock_betweenness = betweenness.lock().unwrap();
+                        for &node in &queue[1..] {
+                            lock_betweenness[node] += delta[node];
+                        }
+                    }
+                    cpl.update();
+                }
+            });
+        }
+    });
+
+    cpl.done_with_count(num_nodes);
+    betweenness.into_inner().unwrap()
 }
 
-impl<G: RandomAccessGraph + Sync> BetweennessCentrality<'_, G> {
-    pub fn new(graph: &G, num_of_threads: usize) -> BetweennessCentrality<G> {
-        let num_threads = if num_of_threads == 0 {
-            usize::from(available_parallelism().unwrap())
-        } else {
-            num_of_threads
-        };
-        let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
-        thread_pool_builder = thread_pool_builder.num_threads(num_threads);
-        let thread_pool = thread_pool_builder
-            .build()
-            .expect("Error in building thread pool");
-        BetweennessCentrality {
-            betweenness: Vec::new(),
-            graph,
-            thread_pool,
-        }
+fn check_overflow(sigma: &[i64], node: usize, curr_sigma: i64, s: usize) -> bool {
+    if sigma[s] > i64::MAX - curr_sigma {
+        panic!("{} > {} ({node} -> {s})", sigma[s], i64::MAX - curr_sigma);
     }
-
-    pub fn compute(&mut self, pl: &mut impl ConcurrentProgressLog) {
-        let num_nodes = self.graph.num_nodes();
-        let thread_pool = &self.thread_pool;
-
-        pl.item_name("visit")
-            .display_memory(false) //TODO: check if this can be enabled https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
-            .local_speed(true)
-            .expected_updates(Some(num_nodes));
-
-        pl.start(format!(
-            "Computing betweenness centrality with {} threads...",
-            &self.thread_pool.current_num_threads()
-        ));
-
-        let atomic_counter = atomic_counter::ConsistentCounter::new(0);
-        let betweenness: Mutex<Vec<f64>> = Mutex::new(vec![0.; num_nodes]);
-
-        thread_pool.in_place_scope(|scope| {
-            for _ in 0..thread_pool.current_num_threads() {
-                scope.spawn(|_| {
-                    let graph = self.graph;
-                    let mut pl = pl.clone();
-                    let mut distance: Vec<i32> = vec![-1; num_nodes];
-                    let mut delta: Vec<f64> = vec![0.; num_nodes];
-                    let mut sigma: Vec<i64> = vec![0; num_nodes];
-                    let mut queue = Vec::new();
-
-                    loop {
-                        let curr = atomic_counter.inc();
-                        if curr >= num_nodes {
-                            break;
-                        }
-                        if graph.outdegree(curr) == 0 {
-                            pl.update();
-                            continue;
-                        }
-                        queue.clear();
-                        distance.fill(-1);
-                        sigma.fill(0);
-                        distance[curr] = 0;
-                        sigma[curr] = 1;
-
-                        queue.push(curr);
-                        let mut overflow = false;
-
-                        let mut i = 0;
-                        while i != queue.len() {
-                            let node = queue[i];
-                            let d = distance[node];
-                            debug_assert_ne!(d, -1);
-                            let curr_sigma = sigma[node];
-                            for s in graph.successors(node) {
-                                if distance[s] == -1 {
-                                    distance[s] = d + 1;
-                                    queue.push(s);
-                                    //TODO: maybe use a different error handling. Not debug assert?
-                                    debug_assert!(Self::check_overflow(
-                                        &sigma, node, curr_sigma, s
-                                    ));
-                                    overflow |= sigma[s] > i64::MAX - curr_sigma;
-                                    sigma[s] += curr_sigma;
-                                } else if distance[s] == d + 1 {
-                                    debug_assert!(Self::check_overflow(
-                                        &sigma, node, curr_sigma, s
-                                    ));
-                                    overflow |= sigma[s] > i64::MAX - curr_sigma;
-                                    sigma[s] += curr_sigma;
-                                }
-                            }
-                            i += 1;
-                        }
-
-                        if overflow {
-                            panic!("Path count overflow")
-                        }
-
-                        for &node in queue[1..].iter().rev() {
-                            let d = distance[node];
-                            let sigma_node = sigma[node] as f64;
-                            delta[node] = 0.;
-                            for s in graph.successors(node) {
-                                if distance[s] == d + 1 {
-                                    delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
-                                }
-                            }
-                        }
-
-                        {
-                            //TODO: try lock, if it fails update betweenness at next step after overflow check
-                            let mut lock_betweenness = betweenness.lock().unwrap();
-                            for &node in &queue[1..] {
-                                lock_betweenness[node] += delta[node];
-                            }
-                        }
-                        pl.update();
-                    }
-                });
-            }
-        });
-
-        pl.done_with_count(num_nodes);
-        self.betweenness = betweenness.into_inner().unwrap();
-    }
-
-    fn check_overflow(sigma: &[i64], node: usize, curr_sigma: i64, s: usize) -> bool {
-        if sigma[s] > i64::MAX - curr_sigma {
-            panic!("{} > {} ({node} -> {s})", sigma[s], i64::MAX - curr_sigma);
-        }
-        true
-    }
+    true
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::betweenness::BetweennessCentrality;
+    use crate::betweenness::compute;
     use crate::utils::{new_clique, new_directed_cycle};
     use assert_approx_eq::assert_approx_eq;
     use dsi_progress_logger::no_logging;
@@ -155,38 +136,34 @@ mod tests {
     #[test]
     fn test_path() {
         let g = VecGraph::from_arcs([(0, 1), (1, 2)]);
-        let mut centrality = BetweennessCentrality::new(&g, 0);
-        centrality.compute(no_logging!());
-
-        assert_approx_eq!(centrality.betweenness[0], 0., 1E-5);
-        assert_approx_eq!(centrality.betweenness[1], 1., 1E-5);
-        assert_approx_eq!(centrality.betweenness[2], 0., 1E-5);
+        let betweenness = compute(&g, 0, no_logging!());
+        
+        assert_approx_eq!(betweenness[0], 0., 1E-5);
+        assert_approx_eq!(betweenness[1], 1., 1E-5);
+        assert_approx_eq!(betweenness[2], 0., 1E-5);
     }
 
     #[test]
     fn test_lozenge() {
         let g = VecGraph::from_arcs([(0, 1), (0, 2), (1, 3), (2, 3)]);
-        let mut centrality = BetweennessCentrality::new(&g, 0);
-        centrality.compute(no_logging!());
+        let betweenness = compute(&g, 0, no_logging!());
 
-        assert_approx_eq!(centrality.betweenness[0], 0., 1E-5);
-        assert_approx_eq!(centrality.betweenness[1], 0.5, 1E-5);
-        assert_approx_eq!(centrality.betweenness[2], 0.5, 1E-5);
-        assert_approx_eq!(centrality.betweenness[3], 0., 1E-5);
+        assert_approx_eq!(betweenness[0], 0., 1E-5);
+        assert_approx_eq!(betweenness[1], 0.5, 1E-5);
+        assert_approx_eq!(betweenness[2], 0.5, 1E-5);
+        assert_approx_eq!(betweenness[3], 0., 1E-5);
     }
 
     #[test]
     fn test_cycle() {
         for size in [10, 50, 100] {
             let graph = new_directed_cycle(size);
-            let mut centrality = BetweennessCentrality::new(&graph, 0);
-            centrality.compute(no_logging!());
+            let betweenness = compute(&graph, 0, no_logging!());
 
             let mut expected = Vec::new();
             expected.resize(size, ((size - 1) * (size - 2)) as f64 / 2.0);
 
-            (0..size)
-                .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+            (0..size).for_each(|i| assert_approx_eq!(betweenness[i], expected[i], 1E-12));
         }
     }
 
@@ -194,13 +171,11 @@ mod tests {
     fn test_clique() {
         for size in [10, 50, 100] {
             let graph = new_clique(size);
-            let mut centrality = BetweennessCentrality::new(&graph, 0);
-            centrality.compute(no_logging!());
+            let betweenness = compute(&graph, 0, no_logging!());
 
             let expected = vec![0f64; size];
 
-            (0..size)
-                .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+            (0..size).for_each(|i| assert_approx_eq!(betweenness[i], expected[i], 1E-12));
         }
     }
 
@@ -215,15 +190,13 @@ mod tests {
                 }
                 graph.add_arcs(arcs);
 
-                let mut centrality = BetweennessCentrality::new(&graph, 0);
-                centrality.compute(no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!());
 
                 let mut expected = vec![0f64; k + p];
                 (0..k).for_each(|i| expected[i] = 0.);
                 (k..k + p).for_each(|i| expected[i] = ((p - 1) * (p - 2)) as f64 / 2.0);
 
-                (0..k + p)
-                    .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+                (0..k + p).for_each(|i| assert_approx_eq!(betweenness[i], expected[i], 1E-12));
             }
         }
     }
@@ -240,8 +213,7 @@ mod tests {
                 arcs.push((k - 1, k));
                 graph.add_arcs(arcs);
 
-                let mut centrality = BetweennessCentrality::new(&graph, 0);
-                centrality.compute(no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!());
 
                 let mut expected = vec![0f64; k + p];
                 (0..k - 1).for_each(|i| expected[i] = 0.);
@@ -252,7 +224,7 @@ mod tests {
                 });
 
                 (0..k + p).for_each(|i| {
-                    assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12);
+                    assert_approx_eq!(betweenness[i], expected[i], 1E-12);
                 });
             }
         }
@@ -270,8 +242,7 @@ mod tests {
                 arcs.push((k, k - 1));
                 graph.add_arcs(arcs);
 
-                let mut centrality = BetweennessCentrality::new(&graph, 0);
-                centrality.compute(no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!());
 
                 let mut expected = vec![0f64; k + p];
                 (0..k - 1).for_each(|i| expected[i] = 0.);
@@ -285,8 +256,7 @@ mod tests {
                         + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0;
                 });
 
-                (0..k + p)
-                    .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+                (0..k + p).for_each(|i| assert_approx_eq!(betweenness[i], expected[i], 1E-12));
             }
         }
     }
@@ -304,8 +274,7 @@ mod tests {
                 arcs.push((k - 1, k));
                 graph.add_arcs(arcs);
 
-                let mut centrality = BetweennessCentrality::new(&graph, 0);
-                centrality.compute(no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!());
 
                 let mut expected = vec![0f64; k + p];
                 (0..k - 1).for_each(|i| expected[i] = 0.);
@@ -317,8 +286,7 @@ mod tests {
                         (k * (p - 2)) as f64 + ((p as i32 - 1) * (p as i32 - 2)) as f64 / 2.0
                 });
 
-                (0..k + p)
-                    .for_each(|i| assert_approx_eq!(centrality.betweenness[i], expected[i], 1E-12));
+                (0..k + p).for_each(|i| assert_approx_eq!(betweenness[i], expected[i], 1E-12));
             }
         }
     }
@@ -329,19 +297,13 @@ mod tests {
             for size in [10, 50, 100] {
                 let graph = VecGraph::from_lender(ErdosRenyi::new(size, p, 0).iter());
 
-                let mut centrality_multiple_visits = BetweennessCentrality::new(&graph, 0);
-                centrality_multiple_visits.compute(no_logging!());
+                let betweenness_multiple_visits = compute(&graph, 0, no_logging!());
 
-                let mut centrality = BetweennessCentrality::new(&graph, 0);
-                centrality.compute(no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!());
 
                 let size = graph.num_nodes();
                 (0..size).for_each(|i| {
-                    assert_approx_eq!(
-                        centrality.betweenness[i],
-                        centrality_multiple_visits.betweenness[i],
-                        1E-12
-                    )
+                    assert_approx_eq!(betweenness[i], betweenness_multiple_visits[i], 1E-12)
                 });
             }
         }
@@ -380,7 +342,6 @@ mod tests {
         }
         graph.add_arcs(arcs);
 
-        let mut centrality = BetweennessCentrality::new(&graph, 0);
-        centrality.compute(no_logging!());
+        compute(&graph, 0, no_logging!());
     }
 }

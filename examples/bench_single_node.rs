@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut geom = GeometricCentralities::new(&graph, 0);
     info!("First run to get reachable nodes...");
-    let res = geom.compute_single_node_par_visit(args.node, no_logging!(), args.granularity);
+    let res = geom.compute_single_node_par_visit(args.node, no_logging!());
     info!("Reachable nodes: {}", res.reachable);
 
     let mut c = Criterion::default()
@@ -54,7 +54,6 @@ fn main() -> anyhow::Result<()> {
             geom.compute_single_node_par_visit(
                 black_box(args.node),
                 no_logging!(),
-                black_box(args.granularity),
             )
         })
     });

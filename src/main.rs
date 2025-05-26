@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
 
         if args.parallel {
             println!("Computing geometric centralities with parallel visit");
-            geom.compute_all_par_visit(&mut ProgressLogger::default(), args.granularity);
+            geom.compute_all_par_visit(&mut ProgressLogger::default());
         } else {
             println!("Computing geometric centralities with sequential visit");
             geom.compute(&mut ConcurrentWrapper::new());

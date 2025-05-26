@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-webgraph = "0.2.1"
-webgraph-algo = "0.1.1"
+webgraph = "0.3.0"
+webgraph-algo = "0.2.0"
 dsi-progress-logger = "0.8.1"
 atomic-counter = "1.0.1"
 rayon = "1.10.0"
@@ -21,15 +21,20 @@ openmp-reducer = "0.2.3"
 criterion = "0.5.1"
 
 [profile.release]
-opt-level = 3             # like --release
-lto = "fat"               # Full LTO
-overflow-checks = false   # Disable integer overflow checks.
-debug-assertions = false  # Enables debug assertions.
-codegen-units = 1         # slower compile times, but maybe better perf
+opt-level = 3            # like --release
+#lto = "fat"              # Full LTO
+overflow-checks = false  # Disable integer overflow checks.
+debug = true             # Include debug info.
+debug-assertions = false # Enables debug assertions.
+#codegen-units = 1        # slower compile times, but maybe better perf
 
-[profile.profiling]
-inherits = "release"
-debug = true
+[profile.bench]
+opt-level = 3            # like --release
+lto = "fat"              # Full LTO
+overflow-checks = false  # Disable integer overflow checks.
+debug = true             # Include debug info.
+debug-assertions = false # Enables debug assertions.
+codegen-units = 1        # slower compile times, but maybe better perf
 
 [[example]]
 name = "bench_geometric_centralities"

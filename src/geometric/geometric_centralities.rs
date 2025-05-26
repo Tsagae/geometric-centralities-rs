@@ -117,7 +117,6 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
         &mut self,
         start_node: usize,
         pl: &mut impl ProgressLog,
-        granularity: usize,
     ) -> GeometricCentralityResult {
         let num_of_nodes = self.graph.num_nodes();
 
@@ -131,14 +130,14 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             self.thread_pool.current_num_threads()
         ));
 
-        let mut bfs = ParFair::new(self.graph, granularity);
+        let mut bfs = ParFair::new(self.graph);
         let res = Self::single_visit_parallel(self.alpha, start_node, &mut bfs, &self.thread_pool);
 
         pl.done();
         res
     }
 
-    pub fn compute_all_par_visit(&mut self, pl: &mut impl ProgressLog, granularity: usize) {
+    pub fn compute_all_par_visit(&mut self, pl: &mut impl ProgressLog) {
         self.init(pl);
         let num_of_nodes = self.graph.num_nodes();
 
@@ -147,7 +146,7 @@ impl<G: RandomAccessGraph + Sync> GeometricCentralities<'_, G> {
             self.thread_pool.current_num_threads()
         ));
 
-        let mut bfs = ParFair::new(self.graph, granularity);
+        let mut bfs = ParFair::new(self.graph);
 
         for node in 0..num_of_nodes {
             let result = Self::single_visit_parallel(self.alpha, node, &mut bfs, &self.thread_pool);
@@ -360,7 +359,7 @@ mod tests {
     fn test_compute_all_par_visit() {
         let graph = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
         let mut centralities = GeometricCentralities::new(&graph, 0);
-        centralities.compute_all_par_visit(&mut dsi_progress_logger::ProgressLogger::default(), 1);
+        centralities.compute_all_par_visit(&mut dsi_progress_logger::ProgressLogger::default());
 
         assert_eq!(centralities.closeness[0], 0f64);
         assert_eq!(centralities.closeness[1], 1f64);
@@ -381,7 +380,7 @@ mod tests {
             let graph = new_directed_cycle(size);
             let mut centralities = GeometricCentralities::new(&graph, 0);
             centralities
-                .compute_all_par_visit(&mut dsi_progress_logger::ProgressLogger::default(), 1);
+                .compute_all_par_visit(&mut dsi_progress_logger::ProgressLogger::default());
 
             let mut expected = Vec::new();
 

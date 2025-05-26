@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
 
     if args.parallel {
         info!("-------------- Computing with parallel visit --------------");
-        geom.compute_all_par_visit(&mut ProgressLogger::default(), args.granularity);
+        geom.compute_all_par_visit(&mut ProgressLogger::default());
     } else {
         info!("-------------- Computing with sequential visit --------------");
         geom.compute(&mut ConcurrentWrapper::with_threshold(500));

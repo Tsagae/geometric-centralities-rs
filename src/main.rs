@@ -1,4 +1,5 @@
 use clap::Parser;
+use common_traits::Number;
 use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::betweenness::betweenness_centrality;
 use geometric_centralities::geometric;
@@ -29,6 +30,9 @@ struct MainArgs {
 
     #[arg(short = 'g', long, default_value = "100")]
     granularity: usize,
+
+    #[arg(long)]
+    custom_geometric: bool,
 
     #[arg(long)]
     geometric: bool,
@@ -109,6 +113,70 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
                 float_to_string_iter(res.harmonic.iter().map(|&f| f)),
             );
             write_to_file(&results_dir, "reachable", res.reachable.iter());
+        }
+    }
+
+    if args.custom_geometric {
+        const DEFAULT_ALPHA: f64 = 0.5; // Needed since it can't be captured
+
+        #[derive(Clone, Default)]
+        struct CustomGeomCentralityResult {
+            closeness: f64,
+            harmonic: f64,
+            lin: f64,
+            exponential: f64,
+            reachable: usize,
+        }
+        let mut res = geometric::compute_custom(
+            &graph,
+            args.threads,
+            &mut ConcurrentWrapper::with_threshold(1000),
+            |anything: &mut CustomGeomCentralityResult, d| {
+                let hd = 1f64 / d as f64;
+                let ed = DEFAULT_ALPHA.pow(d as f64);
+                anything.closeness += d as f64;
+                anything.harmonic += hd;
+                anything.reachable += 1;
+                anything.exponential += ed;
+            },
+        );
+
+        for item in &mut res {
+            item.reachable += 1;
+            if item.closeness == 0f64 {
+                item.lin = 1f64;
+            } else {
+                item.closeness = 1f64 / item.closeness;
+                item.lin = item.reachable as f64 * item.reachable as f64 * item.closeness;
+            }
+        }
+
+        if args.save {
+            write_to_file(
+                &results_dir,
+                "closeness",
+                float_to_string_iter(res.iter().map(|item| item.closeness)),
+            );
+            write_to_file(
+                &results_dir,
+                "lin",
+                float_to_string_iter(res.iter().map(|item| item.lin)),
+            );
+            write_to_file(
+                &results_dir,
+                "exponential",
+                float_to_string_iter(res.iter().map(|item| item.exponential)),
+            );
+            write_to_file(
+                &results_dir,
+                "harmonic",
+                float_to_string_iter(res.iter().map(|item| item.harmonic)),
+            );
+            write_to_file(
+                &results_dir,
+                "reachable",
+                res.iter().map(|item| item.reachable),
+            );
         }
     }
 

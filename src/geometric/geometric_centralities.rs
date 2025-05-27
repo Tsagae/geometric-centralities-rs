@@ -41,6 +41,65 @@ struct ReducerCollection<'a> {
     reachable: SharedReducer<'a, usize, usize>,
 }
 
+pub fn compute_custom<T: Default + Clone + Sync>(
+    graph: &(impl RandomAccessGraph + Sync),
+    num_of_threads: usize,
+    pl: &mut impl ProgressLog,
+    op: fn(&mut T, usize),
+) -> Box<[T]> {
+    let num_nodes = graph.num_nodes();
+
+    let num_threads = if num_of_threads == 0 {
+        available_parallelism().unwrap()
+    } else {
+        NonZero::new(num_of_threads).unwrap()
+    };
+
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads.into())
+        .build()
+        .expect("Error in building thread pool");
+
+    let mut cpl = pl.concurrent(); //TODO: pl.concurrent_with_threshold(n)
+    cpl.item_name("visit").expected_updates(Some(num_nodes));
+
+    cpl.start(format!(
+        "Computing geometric centralities (custom) with {} threads...",
+        &thread_pool.current_num_threads()
+    ));
+
+    let atomic_counter = atomic_counter::RelaxedCounter::new(0);
+
+    let mut data = vec![T::default(); num_nodes].into_boxed_slice();
+    let data_sync_cell = data.as_sync_slice();
+
+    //TODO: swap rayon threadpool with stdlib threadpool https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
+    thread_pool.in_place_scope(|scope| {
+        for _ in 0..thread_pool.current_num_threads() {
+            scope.spawn(|_| {
+                let mut cpl = cpl.clone();
+                let mut bfs = Seq::new(graph);
+
+                let mut target_node = atomic_counter.inc();
+                while target_node < num_nodes {
+                    unsafe {
+                        data_sync_cell[target_node].set(single_visit_sequential_custom(
+                            target_node,
+                            &mut bfs,
+                            op,
+                        ));
+                    }
+                    target_node = atomic_counter.inc();
+                    cpl.update();
+                }
+            });
+        }
+    });
+
+    cpl.done_with_count(num_nodes);
+    data
+}
+
 pub fn compute(
     graph: &(impl RandomAccessGraph + Sync),
     num_of_threads: usize,
@@ -200,6 +259,37 @@ pub fn compute_all_par_visit(
         exponential,
         reachable,
     }
+}
+
+fn single_visit_sequential_custom<T: Default + Clone>(
+    start: usize,
+    bfs: &mut Seq<&(impl RandomAccessGraph + Sync)>,
+    op: fn(&mut T, usize),
+) -> T {
+    let mut anything = T::default();
+    bfs.reset();
+    bfs.visit([start], |event| {
+        match event {
+            EventPred::Init { .. } => {}
+            EventPred::Unknown {
+                node: _node,
+                pred: _pred,
+                distance,
+            } => {
+                let d = distance;
+                if d == 0 {
+                    //Skip first
+                    return Continue(());
+                }
+                op(&mut anything, d)
+            }
+            EventPred::Known { .. } => {}
+            EventPred::Done { .. } => {}
+        }
+        Continue(())
+    })
+    .continue_value_no_break();
+    anything
 }
 
 fn single_visit_sequential(

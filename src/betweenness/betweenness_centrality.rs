@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 use atomic_counter::AtomicCounter;
 use dsi_progress_logger::ProgressLog;
 use std::sync::Mutex;
@@ -5,6 +7,7 @@ use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
 
 #[derive(Debug)]
+#[derive(PartialEq)]
 pub enum BetweennessError {
     PathCountOverflow,
 }
@@ -37,18 +40,23 @@ pub fn compute(
     ));
 
     let atomic_counter = atomic_counter::RelaxedCounter::new(0);
+    let shared_overflow_check = AtomicBool::new(false);
     let betweenness = Mutex::new(vec![0.; num_nodes].into_boxed_slice());
 
     thread_pool.in_place_scope(|scope| {
         for _ in 0..thread_pool.current_num_threads() {
-            scope.spawn(|s| {
+            scope.spawn(|_| {
                 let mut cpl = cpl.clone();
                 let mut distance = vec![-1i32; num_nodes].into_boxed_slice();
                 let mut delta = vec![0f64; num_nodes].into_boxed_slice();
                 let mut sigma = vec![0i64; num_nodes].into_boxed_slice();
                 let mut queue = Vec::new();
 
-                loop {
+                'thread_loop: loop {
+                    if shared_overflow_check.load(Relaxed) {
+                        break;
+                    }
+                        
                     let curr = atomic_counter.inc();
                     if curr >= num_nodes {
                         break;
@@ -64,7 +72,7 @@ pub fn compute(
                     sigma[curr] = 1;
 
                     queue.push(curr);
-                    let mut overflow = false;
+                    let mut overflow_check = false;
 
                     let mut i = 0;
                     while i != queue.len() {
@@ -76,22 +84,29 @@ pub fn compute(
                             if distance[s] == -1 {
                                 distance[s] = d + 1;
                                 queue.push(s);
-                                //TODO: maybe use a different error handling. Not debug assert?
-                                debug_assert!(check_overflow(&sigma, node, curr_sigma, s));
-                                overflow |= sigma[s] > i64::MAX - curr_sigma;
+                                #[cfg(debug_assertions)]
+                                if !check_overflow(&sigma, node, curr_sigma, s) {
+                                    shared_overflow_check.store(true, Relaxed);
+                                    break 'thread_loop;
+                                }
+                                overflow_check |= sigma[s] > i64::MAX - curr_sigma;
                                 sigma[s] += curr_sigma;
                             } else if distance[s] == d + 1 {
-                                debug_assert!(check_overflow(&sigma, node, curr_sigma, s));
-                                overflow |= sigma[s] > i64::MAX - curr_sigma;
+                                #[cfg(debug_assertions)]
+                                if !check_overflow(&sigma, node, curr_sigma, s) {
+                                    shared_overflow_check.store(true, Relaxed);
+                                    break 'thread_loop;
+                                }
+                                overflow_check |= sigma[s] > i64::MAX - curr_sigma;
                                 sigma[s] += curr_sigma;
                             }
                         }
                         i += 1;
                     }
 
-                    if overflow {
-                        panic!("Overflow error");
-                        //return Err(BetweennessError::PathCountOverflow);
+                    if overflow_check {
+                        shared_overflow_check.store(true, Relaxed);
+                        break;
                     }
 
                     for &node in queue[1..].iter().rev() {
@@ -117,20 +132,26 @@ pub fn compute(
         }
     });
 
+    if shared_overflow_check.into_inner() {
+       return Err(BetweennessError::PathCountOverflow); 
+    }
+
     cpl.done_with_count(num_nodes);
+    
     Ok(betweenness.into_inner().unwrap())
 }
 
 fn check_overflow(sigma: &[i64], node: usize, curr_sigma: i64, s: usize) -> bool {
     if sigma[s] > i64::MAX - curr_sigma {
-        panic!("{} > {} ({node} -> {s})", sigma[s], i64::MAX - curr_sigma);
+        //panic!("{} > {} ({node} -> {s})", sigma[s], i64::MAX - curr_sigma);
+        return false;
     }
     true
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::betweenness::compute;
+    use crate::betweenness::{compute, BetweennessError};
     use crate::utils::{new_clique, new_directed_cycle};
     use assert_approx_eq::assert_approx_eq;
     use dsi_progress_logger::no_logging;
@@ -319,18 +340,17 @@ mod tests {
         let blocks = 20;
         let block_size = 10;
 
-        overflow_test(blocks, block_size);
+        overflow_test(blocks, block_size).unwrap();
     }
 
     #[test]
-    #[should_panic] //TODO: maybe change with a different error handling
     fn test_overflow_not_ok() {
         let blocks = 40;
         let block_size = 10;
-        overflow_test(blocks, block_size);
+        assert_eq!(overflow_test(blocks, block_size).err().unwrap(), BetweennessError::PathCountOverflow);
     }
 
-    fn overflow_test(blocks: usize, block_size: usize) {
+    fn overflow_test(blocks: usize, block_size: usize) -> Result<Box<[f64]>, BetweennessError> {
         let n = blocks * block_size;
         let mut arcs = Vec::new();
         let mut graph = VecGraph::new();
@@ -347,6 +367,6 @@ mod tests {
         }
         graph.add_arcs(arcs);
 
-        compute(&graph, 0, no_logging!()).unwrap();
+        compute(&graph, 0, no_logging!())
     }
 }

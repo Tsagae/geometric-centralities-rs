@@ -18,7 +18,6 @@ assert_approx_eq = "1.1.0"
 sync-cell-slice = "0.9.11"
 no-break = "0.1.2"
 openmp-reducer = "0.2.3"
-criterion = "0.5.1"
 
 [profile.release]
 opt-level = 3            # like --release
@@ -35,9 +34,6 @@ overflow-checks = false  # Disable integer overflow checks.
 debug = true             # Include debug info.
 debug-assertions = false # Enables debug assertions.
 codegen-units = 1        # slower compile times, but maybe better perf
-
-[[example]]
-name = "bench_geometric_centralities"
 
 [[bin]]
 name = "bin"

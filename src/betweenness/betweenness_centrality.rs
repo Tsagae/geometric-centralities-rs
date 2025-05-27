@@ -84,21 +84,23 @@ pub fn compute(
                             if distance[s] == -1 {
                                 distance[s] = d + 1;
                                 queue.push(s);
+                                let (new_sigma, overflow) = sigma[s].overflowing_add(curr_sigma);
                                 #[cfg(debug_assertions)]
-                                if !check_overflow(&sigma, node, curr_sigma, s) {
+                                if overflow{
                                     shared_overflow_check.store(true, Relaxed);
                                     break 'thread_loop;
                                 }
-                                overflow_check |= sigma[s] > i64::MAX - curr_sigma;
-                                sigma[s] += curr_sigma;
+                                overflow_check |= overflow;
+                                sigma[s] = new_sigma;
                             } else if distance[s] == d + 1 {
+                                let (new_sigma, overflow) = sigma[s].overflowing_add(curr_sigma);
                                 #[cfg(debug_assertions)]
-                                if !check_overflow(&sigma, node, curr_sigma, s) {
+                                if overflow{
                                     shared_overflow_check.store(true, Relaxed);
                                     break 'thread_loop;
                                 }
-                                overflow_check |= sigma[s] > i64::MAX - curr_sigma;
-                                sigma[s] += curr_sigma;
+                                overflow_check |= overflow;
+                                sigma[s] = new_sigma;
                             }
                         }
                         i += 1;
@@ -139,14 +141,6 @@ pub fn compute(
     cpl.done_with_count(num_nodes);
     
     Ok(betweenness.into_inner().unwrap())
-}
-
-fn check_overflow(sigma: &[i64], node: usize, curr_sigma: i64, s: usize) -> bool {
-    if sigma[s] > i64::MAX - curr_sigma {
-        //panic!("{} > {} ({node} -> {s})", sigma[s], i64::MAX - curr_sigma);
-        return false;
-    }
-    true
 }
 
 #[cfg(test)]

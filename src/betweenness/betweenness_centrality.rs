@@ -1,13 +1,13 @@
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::Relaxed;
+#![allow(unused_labels)] //TODO: check if this can be avoided
 use atomic_counter::AtomicCounter;
 use dsi_progress_logger::ProgressLog;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
 
-#[derive(Debug)]
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum BetweennessError {
     PathCountOverflow,
 }
@@ -30,10 +30,9 @@ pub fn compute(
         .build()
         .expect("Error in building thread pool");
 
-    let mut cpl = pl.concurrent();
-
+    let mut cpl = pl.concurrent(); //TODO: pl.concurrent_with_threshold(n)  
     cpl.item_name("visit").expected_updates(Some(num_nodes));
-
+    
     cpl.start(format!(
         "Computing betweenness centrality with {} threads...",
         &thread_pool.current_num_threads()
@@ -51,12 +50,12 @@ pub fn compute(
                 let mut delta = vec![0f64; num_nodes].into_boxed_slice();
                 let mut sigma = vec![0i64; num_nodes].into_boxed_slice();
                 let mut queue = Vec::new();
-
+                
                 'thread_loop: loop {
                     if shared_overflow_check.load(Relaxed) {
                         break;
                     }
-                        
+
                     let curr = atomic_counter.inc();
                     if curr >= num_nodes {
                         break;
@@ -86,7 +85,7 @@ pub fn compute(
                                 queue.push(s);
                                 let (new_sigma, overflow) = sigma[s].overflowing_add(curr_sigma);
                                 #[cfg(debug_assertions)]
-                                if overflow{
+                                if overflow {
                                     shared_overflow_check.store(true, Relaxed);
                                     break 'thread_loop;
                                 }
@@ -95,7 +94,7 @@ pub fn compute(
                             } else if distance[s] == d + 1 {
                                 let (new_sigma, overflow) = sigma[s].overflowing_add(curr_sigma);
                                 #[cfg(debug_assertions)]
-                                if overflow{
+                                if overflow {
                                     shared_overflow_check.store(true, Relaxed);
                                     break 'thread_loop;
                                 }
@@ -135,11 +134,11 @@ pub fn compute(
     });
 
     if shared_overflow_check.into_inner() {
-       return Err(BetweennessError::PathCountOverflow); 
+        return Err(BetweennessError::PathCountOverflow);
     }
 
     cpl.done_with_count(num_nodes);
-    
+
     Ok(betweenness.into_inner().unwrap())
 }
 
@@ -157,7 +156,7 @@ mod tests {
     fn test_path() {
         let g = VecGraph::from_arcs([(0, 1), (1, 2)]);
         let betweenness = compute(&g, 0, no_logging!()).unwrap();
-        
+
         assert_approx_eq!(betweenness[0], 0., 1E-5);
         assert_approx_eq!(betweenness[1], 1., 1E-5);
         assert_approx_eq!(betweenness[2], 0., 1E-5);
@@ -341,7 +340,10 @@ mod tests {
     fn test_overflow_not_ok() {
         let blocks = 40;
         let block_size = 10;
-        assert_eq!(overflow_test(blocks, block_size).err().unwrap(), BetweennessError::PathCountOverflow);
+        assert_eq!(
+            overflow_test(blocks, block_size).err().unwrap(),
+            BetweennessError::PathCountOverflow
+        );
     }
 
     fn overflow_test(blocks: usize, block_size: usize) -> Result<Box<[f64]>, BetweennessError> {

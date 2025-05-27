@@ -1,6 +1,7 @@
 use clap::Parser;
 use common_traits::Sequence;
-use dsi_progress_logger::{concurrent_progress_logger, no_logging, ConcurrentWrapper, ProgressLogger};
+use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
+use geometric_centralities::betweenness::betweenness_centrality;
 use geometric_centralities::geometric::GeometricCentralities;
 use log::info;
 use std::env;
@@ -8,7 +9,6 @@ use std::fmt::Display;
 use std::io::Write;
 use webgraph::prelude::{BvGraph, VecGraph};
 use webgraph::traits::RandomAccessGraph;
-use geometric_centralities::betweenness::betweenness_centrality;
 
 #[derive(Parser, Debug)]
 #[command(about = "Benchmarks geometric centralities", long_about = None)]
@@ -18,6 +18,9 @@ struct MainArgs {
 
     #[arg(short = 's', long)]
     save: bool,
+
+    #[arg(short = 'd', long)]
+    decompress: bool,
 
     #[arg(long)]
     parallel: bool,
@@ -55,10 +58,22 @@ fn main() -> anyhow::Result<()> {
         std::fs::create_dir(&results_dir).expect("Can't create directory. It may already exist");
     }
 
-    let graph = BvGraph::with_basename(&args.path)
+    let bv_graph = BvGraph::with_basename(&args.path)
         .load()
         .expect("Failed loading graph");
 
+    if args.decompress {
+        run(decompress_graph(bv_graph), args, &results_dir);
+    } else {
+        run(bv_graph, args, &results_dir);
+    }
+
+    info!("Done");
+
+    Ok(())
+}
+
+fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) {
     if args.geometric {
         let mut geom = GeometricCentralities::new(&graph, args.threads);
 
@@ -80,15 +95,17 @@ fn main() -> anyhow::Result<()> {
     }
 
     if args.betweenness {
-        let betweenness = betweenness_centrality::compute(&graph, args.threads, &mut ConcurrentWrapper::with_threshold(1)).unwrap();
+        let betweenness = betweenness_centrality::compute(
+            &graph,
+            args.threads,
+            &mut ConcurrentWrapper::with_threshold(1000),
+        )
+        .unwrap();
 
         if args.save {
             write_nums_to_file(&results_dir, "betweenness", betweenness.iter());
         }
     }
-    info!("Done");
-
-    Ok(())
 }
 
 fn decompress_graph(g: impl RandomAccessGraph) -> VecGraph {

@@ -1,6 +1,9 @@
-#![allow(unused_labels)] //TODO: check if this can be avoided
+//TODO: check if this can be avoided
+#![allow(unused_labels)]
+
 use atomic_counter::AtomicCounter;
 use dsi_progress_logger::ProgressLog;
+use std::num::NonZero;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Mutex;
@@ -20,19 +23,19 @@ pub fn compute(
     let num_nodes = graph.num_nodes();
 
     let num_threads = if num_of_threads == 0 {
-        usize::from(available_parallelism().unwrap())
+        available_parallelism().unwrap()
     } else {
-        num_of_threads
+        NonZero::new(num_of_threads).unwrap()
     };
-    let mut thread_pool_builder = rayon::ThreadPoolBuilder::new();
-    thread_pool_builder = thread_pool_builder.num_threads(num_threads);
-    let thread_pool = thread_pool_builder
+
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads.into())
         .build()
         .expect("Error in building thread pool");
 
-    let mut cpl = pl.concurrent(); //TODO: pl.concurrent_with_threshold(n)  
+    let mut cpl = pl.concurrent(); //TODO: pl.concurrent_with_threshold(n)
     cpl.item_name("visit").expected_updates(Some(num_nodes));
-    
+
     cpl.start(format!(
         "Computing betweenness centrality with {} threads...",
         &thread_pool.current_num_threads()
@@ -50,7 +53,7 @@ pub fn compute(
                 let mut delta = vec![0f64; num_nodes].into_boxed_slice();
                 let mut sigma = vec![0i64; num_nodes].into_boxed_slice();
                 let mut queue = Vec::new();
-                
+
                 'thread_loop: loop {
                     if shared_overflow_check.load(Relaxed) {
                         break;

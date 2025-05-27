@@ -4,11 +4,16 @@ use std::sync::Mutex;
 use std::thread::available_parallelism;
 use webgraph::traits::RandomAccessGraph;
 
+#[derive(Debug)]
+pub enum BetweennessError {
+    PathCountOverflow,
+}
+
 pub fn compute(
     graph: &(impl RandomAccessGraph + Sync),
     num_of_threads: usize,
     pl: &mut impl ProgressLog,
-) -> Box<[f64]> {
+) -> Result<Box<[f64]>, BetweennessError> {
     let num_nodes = graph.num_nodes();
 
     let num_threads = if num_of_threads == 0 {
@@ -113,7 +118,7 @@ pub fn compute(
     });
 
     cpl.done_with_count(num_nodes);
-    betweenness.into_inner().unwrap()
+    Ok(betweenness.into_inner().unwrap())
 }
 
 fn check_overflow(sigma: &[i64], node: usize, curr_sigma: i64, s: usize) -> bool {
@@ -136,7 +141,7 @@ mod tests {
     #[test]
     fn test_path() {
         let g = VecGraph::from_arcs([(0, 1), (1, 2)]);
-        let betweenness = compute(&g, 0, no_logging!());
+        let betweenness = compute(&g, 0, no_logging!()).unwrap();
         
         assert_approx_eq!(betweenness[0], 0., 1E-5);
         assert_approx_eq!(betweenness[1], 1., 1E-5);
@@ -146,7 +151,7 @@ mod tests {
     #[test]
     fn test_lozenge() {
         let g = VecGraph::from_arcs([(0, 1), (0, 2), (1, 3), (2, 3)]);
-        let betweenness = compute(&g, 0, no_logging!());
+        let betweenness = compute(&g, 0, no_logging!()).unwrap();
 
         assert_approx_eq!(betweenness[0], 0., 1E-5);
         assert_approx_eq!(betweenness[1], 0.5, 1E-5);
@@ -158,7 +163,7 @@ mod tests {
     fn test_cycle() {
         for size in [10, 50, 100] {
             let graph = new_directed_cycle(size);
-            let betweenness = compute(&graph, 0, no_logging!());
+            let betweenness = compute(&graph, 0, no_logging!()).unwrap();
 
             let mut expected = Vec::new();
             expected.resize(size, ((size - 1) * (size - 2)) as f64 / 2.0);
@@ -171,7 +176,7 @@ mod tests {
     fn test_clique() {
         for size in [10, 50, 100] {
             let graph = new_clique(size);
-            let betweenness = compute(&graph, 0, no_logging!());
+            let betweenness = compute(&graph, 0, no_logging!()).unwrap();
 
             let expected = vec![0f64; size];
 
@@ -190,7 +195,7 @@ mod tests {
                 }
                 graph.add_arcs(arcs);
 
-                let betweenness = compute(&graph, 0, no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!()).unwrap();
 
                 let mut expected = vec![0f64; k + p];
                 (0..k).for_each(|i| expected[i] = 0.);
@@ -213,7 +218,7 @@ mod tests {
                 arcs.push((k - 1, k));
                 graph.add_arcs(arcs);
 
-                let betweenness = compute(&graph, 0, no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!()).unwrap();
 
                 let mut expected = vec![0f64; k + p];
                 (0..k - 1).for_each(|i| expected[i] = 0.);
@@ -242,7 +247,7 @@ mod tests {
                 arcs.push((k, k - 1));
                 graph.add_arcs(arcs);
 
-                let betweenness = compute(&graph, 0, no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!()).unwrap();
 
                 let mut expected = vec![0f64; k + p];
                 (0..k - 1).for_each(|i| expected[i] = 0.);
@@ -274,7 +279,7 @@ mod tests {
                 arcs.push((k - 1, k));
                 graph.add_arcs(arcs);
 
-                let betweenness = compute(&graph, 0, no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!()).unwrap();
 
                 let mut expected = vec![0f64; k + p];
                 (0..k - 1).for_each(|i| expected[i] = 0.);
@@ -297,9 +302,9 @@ mod tests {
             for size in [10, 50, 100] {
                 let graph = VecGraph::from_lender(ErdosRenyi::new(size, p, 0).iter());
 
-                let betweenness_multiple_visits = compute(&graph, 0, no_logging!());
+                let betweenness_multiple_visits = compute(&graph, 0, no_logging!()).unwrap();
 
-                let betweenness = compute(&graph, 0, no_logging!());
+                let betweenness = compute(&graph, 0, no_logging!()).unwrap();
 
                 let size = graph.num_nodes();
                 (0..size).for_each(|i| {
@@ -342,6 +347,6 @@ mod tests {
         }
         graph.add_arcs(arcs);
 
-        compute(&graph, 0, no_logging!());
+        compute(&graph, 0, no_logging!()).unwrap();
     }
 }

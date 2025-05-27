@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if args.betweenness {
-        let betweenness = betweenness_centrality::compute(&graph, args.threads, &mut ConcurrentWrapper::with_threshold(1));
+        let betweenness = betweenness_centrality::compute(&graph, args.threads, &mut ConcurrentWrapper::with_threshold(1)).unwrap();
 
         if args.save {
             write_nums_to_file(&results_dir, "betweenness", betweenness.iter());

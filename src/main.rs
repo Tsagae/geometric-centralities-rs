@@ -1,8 +1,7 @@
 use clap::Parser;
-use common_traits::Sequence;
 use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::betweenness::betweenness_centrality;
-use geometric_centralities::geometric::GeometricCentralities;
+use geometric_centralities::geometric;
 use log::info;
 use std::env;
 use std::fmt::Display;
@@ -75,22 +74,28 @@ fn main() -> anyhow::Result<()> {
 
 fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) {
     if args.geometric {
-        let mut geom = GeometricCentralities::new(&graph, args.threads);
+        let res = geometric::geometric_centralities::compute_all_par_visit(
+            &graph,
+            0,
+            dsi_progress_logger::no_logging!(),
+        );
 
         if args.parallel {
-            println!("Computing geometric centralities with parallel visit");
-            geom.compute_all_par_visit(&mut ProgressLogger::default());
+            geometric::compute_all_par_visit(&graph, args.threads, &mut ProgressLogger::default());
         } else {
-            println!("Computing geometric centralities with sequential visit");
-            geom.compute(&mut ConcurrentWrapper::new());
+            geometric::compute(
+                &graph,
+                args.threads,
+                &mut ConcurrentWrapper::with_threshold(1000),
+            );
         }
 
         if args.save {
-            write_nums_to_file(&results_dir, "closeness", geom.closeness.iter());
-            write_nums_to_file(&results_dir, "lin", geom.lin.iter());
-            write_nums_to_file(&results_dir, "exponential", geom.exponential.iter());
-            write_nums_to_file(&results_dir, "harmonic", geom.harmonic.iter());
-            write_nums_to_file(&results_dir, "reachable", geom.reachable.iter());
+            write_nums_to_file(&results_dir, "closeness", res.closeness.iter());
+            write_nums_to_file(&results_dir, "lin", res.lin.iter());
+            write_nums_to_file(&results_dir, "exponential", res.exponential.iter());
+            write_nums_to_file(&results_dir, "harmonic", res.harmonic.iter());
+            write_nums_to_file(&results_dir, "reachable", res.reachable.iter());
         }
     }
 

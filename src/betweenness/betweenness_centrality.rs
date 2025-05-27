@@ -44,7 +44,8 @@ pub fn compute(
     let atomic_counter = atomic_counter::RelaxedCounter::new(0);
     let shared_overflow_check = AtomicBool::new(false);
     let betweenness = Mutex::new(vec![0.; num_nodes].into_boxed_slice());
-
+    
+    //TODO: swap rayon threadpool with stdlib threadpool https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
     thread_pool.in_place_scope(|scope| {
         for _ in 0..thread_pool.current_num_threads() {
             scope.spawn(|_| {

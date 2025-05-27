@@ -104,7 +104,8 @@ pub fn compute(
             });
         }
     });
-    pl.done_with_count(num_nodes);
+
+    cpl.done_with_count(num_nodes);
     GeometricCentralitiesResult {
         closeness,
         harmonic,

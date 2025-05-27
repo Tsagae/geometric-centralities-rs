@@ -418,15 +418,88 @@ fn single_visit_parallel(
 
 #[cfg(test)]
 mod tests {
-    use crate::geometric::geometric_centralities;
+    use crate::geometric;
+    use crate::geometric::{geometric_centralities, GeometricCentralitiesResult};
     use crate::utils::{new_directed_cycle, transpose_arc_list};
     use assert_approx_eq::assert_approx_eq;
+    use dsi_progress_logger::ConcurrentWrapper;
     use webgraph::prelude::VecGraph;
+    use webgraph::traits::SequentialLabeling;
 
-    #[test]
-    fn test_compute() {
+    #[derive(Clone, Default)]
+    struct CustomGeomCentralityResult {
+        closeness: f64,
+        harmonic: f64,
+        lin: f64,
+        reachable: usize,
+    }
+
+    fn custom_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
+        let mut res = geometric::compute_custom(
+            &graph,
+            0,
+            &mut ConcurrentWrapper::with_threshold(1000),
+            |anything: &mut CustomGeomCentralityResult, d| {
+                let hd = 1f64 / d as f64;
+                anything.closeness += d as f64;
+                anything.harmonic += hd;
+                anything.reachable += 1;
+            },
+        );
+
+        for item in &mut res {
+            item.reachable += 1;
+            if item.closeness == 0f64 {
+                item.lin = 1f64;
+            } else {
+                item.closeness = 1f64 / item.closeness;
+                item.lin = item.reachable as f64 * item.reachable as f64 * item.closeness;
+            }
+        }
+
+        GeometricCentralitiesResult {
+            closeness: res.iter().map(|item| item.closeness).collect(),
+            harmonic: res.iter().map(|item| item.harmonic).collect(),
+            lin: res.iter().map(|item| item.lin).collect(),
+            exponential: Box::new([]),
+            reachable: Box::new([]),
+        }
+    }
+
+    fn standard_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
+        geometric_centralities::compute(&graph, 0, dsi_progress_logger::no_logging!())
+    }
+
+    fn all_par_visit_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
+        geometric_centralities::compute_all_par_visit(&graph, 0, dsi_progress_logger::no_logging!())
+    }
+
+    fn single_node_par_visit_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
+        let num_nodes = graph.num_nodes();
+        let mut res = GeometricCentralitiesResult {
+            closeness: vec![0f64; num_nodes].into_boxed_slice(),
+            harmonic: vec![0f64; num_nodes].into_boxed_slice(),
+            lin: vec![0f64; num_nodes].into_boxed_slice(),
+            exponential: Box::new([]),
+            reachable: Box::new([]),
+        };
+        for n in 0..num_nodes {
+            let single_node_res = geometric_centralities::compute_single_node_par_visit(
+                &graph,
+                0,
+                n,
+                dsi_progress_logger::no_logging!(),
+            );
+            res.closeness[n] = single_node_res.closeness;
+            res.harmonic[n] = single_node_res.harmonic;
+            res.lin[n] = single_node_res.lin;
+        }
+        res
+    }
+
+    fn compute_generic(strategy: fn(&VecGraph) -> GeometricCentralitiesResult) {
         let graph = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
-        let res = geometric_centralities::compute(&graph, 0, dsi_progress_logger::no_logging!());
+        let res = strategy(&graph);
 
         assert_eq!(res.closeness[0], 0f64);
         assert_eq!(res.closeness[1], 1f64);
@@ -441,12 +514,10 @@ mod tests {
         assert_eq!(res.harmonic[2], 3f64 / 2f64);
     }
 
-    #[test]
-    fn test_compute_cycle() {
+    fn compute_cycle_generic(strategy: fn(&VecGraph) -> GeometricCentralitiesResult) {
         for size in [10, 50, 100] {
             let graph = new_directed_cycle(size);
-            let res =
-                geometric_centralities::compute(&graph, 0, dsi_progress_logger::no_logging!());
+            let res = strategy(&graph);
 
             let mut expected = Vec::new();
 
@@ -460,51 +531,45 @@ mod tests {
             expected.fill(s);
             (0..size).for_each(|i| assert_approx_eq!(res.harmonic[i], expected[i], 1E-14f64));
         }
+    }
+
+    #[test]
+    fn test_compute_standard() {
+        compute_generic(standard_strategy);
+    }
+
+    #[test]
+    fn test_compute_cycle_standard() {
+        compute_cycle_generic(standard_strategy);
     }
 
     #[test]
     fn test_compute_all_par_visit() {
-        let graph = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
-        let res = geometric_centralities::compute_all_par_visit(
-            &graph,
-            0,
-            dsi_progress_logger::no_logging!(),
-        );
-
-        assert_eq!(res.closeness[0], 0f64);
-        assert_eq!(res.closeness[1], 1f64);
-        assert_eq!(res.closeness[2], 1f64 / 3f64);
-
-        assert_eq!(res.lin[0], 1f64);
-        assert_eq!(res.lin[1], 4f64);
-        assert_eq!(res.lin[2], 3f64);
-
-        assert_eq!(res.harmonic[0], 0f64);
-        assert_eq!(res.harmonic[1], 1f64);
-        assert_eq!(res.harmonic[2], 3f64 / 2f64);
+        compute_generic(all_par_visit_strategy);
     }
 
     #[test]
-    fn test_compute_all_par_visit_cycle() {
-        for size in [10, 50, 100] {
-            let graph = new_directed_cycle(size);
-            let res = geometric_centralities::compute_all_par_visit(
-                &graph,
-                0,
-                dsi_progress_logger::no_logging!(),
-            );
+    fn test_compute_cycle_all_par_visit() {
+        compute_cycle_generic(all_par_visit_strategy);
+    }
 
-            let mut expected = Vec::new();
+    #[test]
+    fn test_compute_custom() {
+        compute_generic(custom_strategy);
+    }
 
-            expected.resize(size, 2. / (size as f64 * (size as f64 - 1.)));
-            (0..size).for_each(|i| assert_approx_eq!(res.closeness[i], expected[i], 1E-15f64));
+    #[test]
+    fn test_compute_cycle_custom() {
+        compute_cycle_generic(custom_strategy);
+    }
 
-            expected.fill(size as f64 * 2. / (size as f64 - 1.));
-            (0..size).for_each(|i| assert_approx_eq!(res.lin[i], expected[i], 1E-15f64));
+    #[test]
+    fn test_compute_single_node_par_visit() {
+        compute_generic(single_node_par_visit_strategy);
+    }
 
-            let s = (1..size).fold(0f64, |acc, i| acc + 1. / (i as f64));
-            expected.fill(s);
-            (0..size).for_each(|i| assert_approx_eq!(res.harmonic[i], expected[i], 1E-14f64));
-        }
+    #[test]
+    fn test_compute_cycle_single_node_par_visit() {
+        compute_cycle_generic(single_node_par_visit_strategy);
     }
 }

@@ -62,7 +62,10 @@ fn main() -> anyhow::Result<()> {
         .expect("Failed loading graph");
 
     if args.decompress {
-        run(decompress_graph(bv_graph), args, &results_dir);
+        info!("Decompressing graph...");
+        let graph = decompress_graph(bv_graph);
+        info!("Graph ready");
+        run(graph, args, &results_dir);
     } else {
         run(bv_graph, args, &results_dir);
     }
@@ -74,28 +77,38 @@ fn main() -> anyhow::Result<()> {
 
 fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) {
     if args.geometric {
-        let res = geometric::geometric_centralities::compute_all_par_visit(
-            &graph,
-            0,
-            dsi_progress_logger::no_logging!(),
-        );
-
-        if args.parallel {
-            geometric::compute_all_par_visit(&graph, args.threads, &mut ProgressLogger::default());
+        let res = if args.parallel {
+            geometric::compute_all_par_visit(&graph, args.threads, &mut ProgressLogger::default())
         } else {
             geometric::compute(
                 &graph,
                 args.threads,
                 &mut ConcurrentWrapper::with_threshold(1000),
-            );
-        }
+            )
+        };
 
         if args.save {
-            write_nums_to_file(&results_dir, "closeness", res.closeness.iter());
-            write_nums_to_file(&results_dir, "lin", res.lin.iter());
-            write_nums_to_file(&results_dir, "exponential", res.exponential.iter());
-            write_nums_to_file(&results_dir, "harmonic", res.harmonic.iter());
-            write_nums_to_file(&results_dir, "reachable", res.reachable.iter());
+            write_to_file(
+                &results_dir,
+                "closeness",
+                float_to_string_iter(res.closeness.iter().map(|&f| f)),
+            );
+            write_to_file(
+                &results_dir,
+                "lin",
+                float_to_string_iter(res.lin.iter().map(|&f| f)),
+            );
+            write_to_file(
+                &results_dir,
+                "exponential",
+                float_to_string_iter(res.exponential.iter().map(|&f| f)),
+            );
+            write_to_file(
+                &results_dir,
+                "harmonic",
+                float_to_string_iter(res.harmonic.iter().map(|&f| f)),
+            );
+            write_to_file(&results_dir, "reachable", res.reachable.iter());
         }
     }
 
@@ -108,9 +121,17 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
         .unwrap();
 
         if args.save {
-            write_nums_to_file(&results_dir, "betweenness", betweenness.iter());
+            write_to_file(
+                &results_dir,
+                "betweenness",
+                float_to_string_iter(betweenness.iter().map(|&f| f)),
+            );
         }
     }
+}
+
+fn float_to_string_iter(iter: impl Iterator<Item = f64>) -> impl Iterator<Item = String> {
+    iter.into_iter().map(|f| format!("{f:.20}"))
 }
 
 fn decompress_graph(g: impl RandomAccessGraph) -> VecGraph {
@@ -126,12 +147,12 @@ fn decompress_graph(g: impl RandomAccessGraph) -> VecGraph {
     vg
 }
 
-fn write_nums_to_file<T: Display>(base_path: &str, filename: &str, nums: impl Iterator<Item = T>) {
+fn write_to_file(base_path: &str, filename: &str, iter: impl Iterator<Item = impl Display>) {
     let filepath = format!("{base_path}/{filename}");
     println!("filepath: {filepath}");
     let mut f = std::fs::File::create(&filepath).expect(&format!("Cannot create file {filename}"));
     let mut string_to_write: String = String::new();
-    nums.for_each(|n| string_to_write.push_str(&format!("{}\n", n)));
+    iter.for_each(|n| string_to_write.push_str(&format!("{}\n", n)));
     f.write(string_to_write.as_bytes())
         .expect(&format!("Failed writing to file {filename}"));
 }

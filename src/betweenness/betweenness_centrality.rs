@@ -7,7 +7,7 @@ use std::num::NonZero;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Mutex;
-use std::thread::available_parallelism;
+use std::thread::{self, available_parallelism};
 use webgraph::traits::RandomAccessGraph;
 
 #[derive(Debug, PartialEq)]
@@ -27,28 +27,23 @@ pub fn compute(
     } else {
         NonZero::new(num_of_threads).unwrap()
     };
-
-    let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads.into())
-        .build()
-        .expect("Error in building thread pool");
+    let num_of_threads = num_threads.get();
 
     let mut cpl = pl.concurrent(); //TODO: pl.concurrent_with_threshold(n)
     cpl.item_name("visit").expected_updates(Some(num_nodes));
 
     cpl.start(format!(
         "Computing betweenness centrality with {} threads...",
-        &thread_pool.current_num_threads()
+        &num_threads
     ));
 
     let atomic_counter = atomic_counter::RelaxedCounter::new(0);
     let shared_overflow_check = AtomicBool::new(false);
     let betweenness = Mutex::new(vec![0.; num_nodes].into_boxed_slice());
-    
-    //TODO: swap rayon threadpool with stdlib threadpool https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
-    thread_pool.in_place_scope(|scope| {
-        for _ in 0..thread_pool.current_num_threads() {
-            scope.spawn(|_| {
+
+    thread::scope(|scope| {
+        for _ in 0..num_of_threads {
+            scope.spawn(|| {
                 let mut cpl = cpl.clone();
                 let mut distance = vec![-1i32; num_nodes].into_boxed_slice();
                 let mut delta = vec![0f64; num_nodes].into_boxed_slice();

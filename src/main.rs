@@ -24,6 +24,9 @@ struct MainArgs {
     #[arg(long)]
     parallel: bool,
 
+    #[arg(long)]
+    parallel_single_node: bool,
+    
     #[arg(short = 't', long, default_value = "0")]
     threads: usize,
 
@@ -77,6 +80,11 @@ fn main() -> anyhow::Result<()> {
 
 fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) {
     if args.geometric {
+        if args.parallel_single_node {
+            geometric::compute_single_node_par_visit(&graph, args.threads, 0, &mut ProgressLogger::default());
+            return;
+        }
+        
         let res = if args.parallel {
             geometric::compute_all_par_visit(&graph, args.threads, &mut ProgressLogger::default())
         } else {

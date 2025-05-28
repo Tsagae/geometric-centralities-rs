@@ -6,6 +6,7 @@ use openmp_reducer::{Reducer, SharedReducer};
 use rayon::ThreadPool;
 use std::num::NonZero;
 use std::ops::ControlFlow::Continue;
+use std::thread;
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
@@ -48,23 +49,19 @@ pub fn compute(
 ) -> GeometricCentralitiesResult {
     let num_nodes = graph.num_nodes();
 
-    let num_threads = if num_of_threads == 0 {
+    let num_of_threads = if num_of_threads == 0 {
         available_parallelism().unwrap()
     } else {
         NonZero::new(num_of_threads).unwrap()
     };
-
-    let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads.into())
-        .build()
-        .expect("Error in building thread pool");
+    let num_of_threads = num_of_threads.get();
 
     let mut cpl = pl.concurrent(); //TODO: pl.concurrent_with_threshold(n)
     cpl.item_name("visit").expected_updates(Some(num_nodes));
 
     cpl.start(format!(
         "Computing geometric centralities with {} threads...",
-        &thread_pool.current_num_threads()
+        &num_of_threads
     ));
 
     let atomic_counter = atomic_counter::RelaxedCounter::new(0);
@@ -81,10 +78,9 @@ pub fn compute(
     let exponential_sync_cell = exponential.as_sync_slice();
     let reachable_sync_cell = reachable.as_sync_slice();
 
-    //TODO: swap rayon threadpool with stdlib threadpool https://docs.rs/dsi-progress-logger/latest/dsi_progress_logger/trait.ConcurrentProgressLog.html
-    thread_pool.in_place_scope(|scope| {
-        for _ in 0..thread_pool.current_num_threads() {
-            scope.spawn(|_| {
+    thread::scope(|scope| {
+        for _ in 0..num_of_threads {
+            scope.spawn(|| {
                 let mut cpl = cpl.clone();
                 let mut bfs = Seq::new(graph);
 
@@ -123,14 +119,15 @@ pub fn compute_single_node_par_visit(
 ) -> SingleNodeResult {
     let num_nodes = graph.num_nodes();
 
-    let num_threads = if num_of_threads == 0 {
+    let num_of_threads = if num_of_threads == 0 {
         available_parallelism().unwrap()
     } else {
         NonZero::new(num_of_threads).unwrap()
     };
+    let num_of_threads = num_of_threads.get();
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads.into())
+        .num_threads(num_of_threads)
         .build()
         .expect("Error in building thread pool");
 
@@ -155,14 +152,15 @@ pub fn compute_all_par_visit(
 ) -> GeometricCentralitiesResult {
     let num_nodes = graph.num_nodes();
 
-    let num_threads = if num_of_threads == 0 {
+    let num_of_threads = if num_of_threads == 0 {
         available_parallelism().unwrap()
     } else {
         NonZero::new(num_of_threads).unwrap()
     };
+    let num_of_threads = num_of_threads.get();
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads.into())
+        .num_threads(num_of_threads)
         .build()
         .expect("Error in building thread pool");
 

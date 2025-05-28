@@ -2,6 +2,7 @@
 #![allow(unused_labels)]
 
 use atomic_counter::AtomicCounter;
+use common_traits::{Sequence, SequenceMut};
 use dsi_progress_logger::ProgressLog;
 use std::num::NonZero;
 use std::sync::atomic::AtomicBool;
@@ -43,7 +44,7 @@ pub fn compute(
 
     thread::scope(|scope| {
         for _ in 0..num_of_threads {
-            scope.spawn(|| {
+            scope.spawn(|| unsafe {
                 let mut cpl = cpl.clone();
                 let mut distance = vec![-1i32; num_nodes].into_boxed_slice();
                 let mut delta = vec![0f64; num_nodes].into_boxed_slice();
@@ -63,7 +64,7 @@ pub fn compute(
                         cpl.update();
                         continue;
                     }
-                    queue.clear();
+                    queue.set_len(0);
                     distance.fill(-1);
                     sigma.fill(0);
                     distance[curr] = 0;
@@ -79,10 +80,11 @@ pub fn compute(
                         debug_assert_ne!(d, -1);
                         let curr_sigma = sigma[node];
                         for s in graph.successors(node) {
-                            if distance[s] == -1 {
-                                distance[s] = d + 1;
+                            if *distance.get_unchecked(s) == -1 {
+                                distance.set_unchecked(s, d + 1);
                                 queue.push(s);
-                                let (new_sigma, overflow) = sigma[s].overflowing_add(curr_sigma);
+                                let (new_sigma, overflow) =
+                                    sigma.get_unchecked(s).overflowing_add(curr_sigma);
                                 #[cfg(debug_assertions)]
                                 if overflow {
                                     shared_overflow_check.store(true, Relaxed);
@@ -90,8 +92,9 @@ pub fn compute(
                                 }
                                 overflow_check |= overflow;
                                 sigma[s] = new_sigma;
-                            } else if distance[s] == d + 1 {
-                                let (new_sigma, overflow) = sigma[s].overflowing_add(curr_sigma);
+                            } else if *distance.get_unchecked(s) == d + 1 {
+                                let (new_sigma, overflow) =
+                                    sigma.get_unchecked(s).overflowing_add(curr_sigma);
                                 #[cfg(debug_assertions)]
                                 if overflow {
                                     shared_overflow_check.store(true, Relaxed);
@@ -110,12 +113,17 @@ pub fn compute(
                     }
 
                     for &node in queue[1..].iter().rev() {
-                        let d = distance[node];
+                        let d = *distance.get_unchecked(node);
                         let sigma_node = sigma[node] as f64;
                         delta[node] = 0.;
                         for s in graph.successors(node) {
-                            if distance[s] == d + 1 {
-                                delta[node] += (1. + delta[s]) * sigma_node / sigma[s] as f64;
+                            if *distance.get_unchecked(s) == d + 1 {
+                                delta.set_unchecked(
+                                    node,
+                                    delta.get_unchecked(node)
+                                        + ((1. + delta.get_unchecked(s)) * sigma_node
+                                            / sigma[s] as f64),
+                                )
                             }
                         }
                     }
@@ -123,7 +131,9 @@ pub fn compute(
                     {
                         let mut lock_betweenness = betweenness.lock().unwrap();
                         for &node in &queue[1..] {
-                            lock_betweenness[node] += delta[node];
+                            let betw_node = *lock_betweenness.get_unchecked(node);
+                            lock_betweenness
+                                .set_unchecked(node, betw_node + delta.get_unchecked(node));
                         }
                     }
                     cpl.update();

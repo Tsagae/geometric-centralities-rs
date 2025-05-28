@@ -117,8 +117,6 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
     }
 
     if args.custom_geometric {
-        const DEFAULT_ALPHA: f64 = 0.5; // Needed since it can't be captured
-
         #[derive(Clone, Default)]
         struct CustomGeomCentralityResult {
             closeness: f64,
@@ -127,13 +125,15 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
             exponential: f64,
             reachable: usize,
         }
+
+        let alpha: f64 = 0.5;
         let mut res = geometric::compute_custom(
             &graph,
             args.threads,
             &mut ConcurrentWrapper::with_threshold(1000),
             |anything: &mut CustomGeomCentralityResult, d| {
                 let hd = 1f64 / d as f64;
-                let ed = DEFAULT_ALPHA.pow(d as f64);
+                let ed = alpha.pow(d as f64);
                 anything.closeness += d as f64;
                 anything.harmonic += hd;
                 anything.reachable += 1;

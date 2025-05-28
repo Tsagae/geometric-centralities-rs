@@ -42,11 +42,11 @@ struct ReducerCollection<'a> {
     reachable: SharedReducer<'a, usize, usize>,
 }
 
-pub fn compute_custom<T: Default + Clone + Sync>(
+pub fn compute_custom<T: Default + Clone + Sync, F: Fn(&mut T, usize) + Sync>(
     graph: &(impl RandomAccessGraph + Sync),
     num_of_threads: usize,
     pl: &mut impl ProgressLog,
-    op: fn(&mut T, usize),
+    op: F,
 ) -> Box<[T]> {
     let num_nodes = graph.num_nodes();
 
@@ -82,7 +82,7 @@ pub fn compute_custom<T: Default + Clone + Sync>(
                         data_sync_cell[target_node].set(single_visit_sequential_custom(
                             target_node,
                             &mut bfs,
-                            op,
+                            &op,
                         ));
                     }
                     target_node = atomic_counter.inc();
@@ -257,7 +257,7 @@ pub fn compute_all_par_visit(
 fn single_visit_sequential_custom<T: Default + Clone>(
     start: usize,
     bfs: &mut Seq<&(impl RandomAccessGraph + Sync)>,
-    op: fn(&mut T, usize),
+    op: impl Fn(&mut T, usize),
 ) -> T {
     let mut anything = T::default();
     bfs.reset();

@@ -1,11 +1,13 @@
 use atomic_counter::AtomicCounter;
-use common_traits::Number;
+use common_traits::{Atomic, AtomicNumber};
+use common_traits::{AtomicF64, Number};
 use dsi_progress_logger::ProgressLog;
 use no_break::NoBreak;
-use openmp_reducer::{Reducer, SharedReducer};
 use rayon::ThreadPool;
 use std::num::NonZero;
 use std::ops::ControlFlow::Continue;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use std::thread;
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
@@ -33,16 +35,8 @@ pub struct GeometricCentralitiesResult {
     pub reachable: Box<[usize]>,
 }
 
-#[derive(Clone)]
-struct ReducerCollection<'a> {
-    closeness: SharedReducer<'a, usize, usize>,
-    harmonic: SharedReducer<'a, f64, f64>,
-    exponential: SharedReducer<'a, f64, f64>,
-    reachable: SharedReducer<'a, usize, usize>,
-}
-
-pub fn compute(
-    graph: &(impl RandomAccessGraph + Sync),
+pub fn compute<T: RandomAccessGraph + Sync>(
+    graph: &T,
     num_of_threads: usize,
     pl: &mut impl ProgressLog,
 ) -> GeometricCentralitiesResult {
@@ -212,27 +206,17 @@ fn single_visit_sequential(
     bfs.reset();
     bfs.visit([start], |event| {
         let base = DEFAULT_ALPHA;
-        match event {
-            EventPred::Init { .. } => {}
-            EventPred::Unknown {
-                node: _node,
-                pred: _pred,
-                distance,
-            } => {
-                let d = distance;
-                reachable += 1;
-                if d == 0 {
-                    //Skip first
-                    return Continue(());
-                }
-                let hd = 1f64 / d as f64;
-                let ed = base.pow(d as f64);
-                closeness += d as f64;
-                harmonic += hd;
-                exponential += ed;
+        if let EventPred::DistanceChanged { nodes, distance: d } = event {
+            reachable += nodes;
+            if d == 0 {
+                //Skip first
+                return Continue(());
             }
-            EventPred::Known { .. } => {}
-            EventPred::Done { .. } => {}
+            let hd = 1f64 / d as f64;
+            let ed = base.pow(d as f64);
+            closeness += (d * nodes) as f64;
+            harmonic += hd * nodes as f64;
+            exponential += ed * nodes as f64;
         }
         Continue(())
     })
@@ -258,42 +242,27 @@ fn single_visit_parallel(
     visit: &mut ParFair<&(impl RandomAccessGraph + Sync)>,
     thread_pool: &ThreadPool,
 ) -> SingleNodeResult {
+    let closeness = AtomicUsize::new(0);
+    let harmonic = AtomicF64::new(0.);
+    let exponential = AtomicF64::new(0.);
+    let reachable = AtomicUsize::new(0);
     let base = DEFAULT_ALPHA;
     visit.reset();
-
-    let usize_reducer_func = |global: &mut usize, local: &usize| *global += *local;
-    let float_reducer_func = |global: &mut f64, local: &f64| *global += *local;
-
-    let closeness_reducer = Reducer::<usize>::new(0, usize_reducer_func);
-    let harmonic_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
-    let exponential_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
-    let reachable_reducer = Reducer::<usize>::new(0, usize_reducer_func);
-
     visit
-        .par_visit_with(
+        .par_visit(
             [start],
-            ReducerCollection {
-                closeness: closeness_reducer.share(),
-                harmonic: harmonic_reducer.share(),
-                exponential: exponential_reducer.share(),
-                reachable: reachable_reducer.share(),
-            },
-            |cloned_reducer_collection, event| {
-                match event {
-                    EventNoPred::Unknown { distance, .. } => {
-                        let d = distance;
-                        *cloned_reducer_collection.reachable.as_mut() += 1;
-                        if d == 0 {
-                            //Skip first
-                            return Continue(());
-                        }
-                        let hd = 1f64 / d as f64;
-                        let ed = base.pow(d as f64);
-                        *cloned_reducer_collection.closeness.as_mut() += d;
-                        *cloned_reducer_collection.harmonic.as_mut() += hd;
-                        *cloned_reducer_collection.exponential.as_mut() += ed;
+            |event| {
+                if let EventNoPred::DistanceChanged { nodes, distance: d } = event {
+                    reachable.fetch_add(nodes, Relaxed);
+                    if d == 0 {
+                        //Skip first
+                        return Continue(());
                     }
-                    _ => {}
+                    let hd = 1f64 / d as f64;
+                    let ed = base.pow(d as f64);
+                    closeness.fetch_add(d * nodes, Relaxed);
+                    harmonic.fetch_add(hd * nodes as f64, Relaxed);
+                    exponential.fetch_add(ed * nodes as f64, Relaxed);
                 }
                 Continue(())
             },
@@ -301,11 +270,11 @@ fn single_visit_parallel(
         )
         .continue_value_no_break();
 
-    let mut closeness = closeness_reducer.get() as f64;
-    let harmonic = harmonic_reducer.get();
+    let mut closeness = closeness.into_inner() as f64;
+    let harmonic = harmonic.into_inner();
+    let exponential = exponential.into_inner();
+    let reachable = reachable.into_inner();
     let lin;
-    let exponential = exponential_reducer.get();
-    let reachable = reachable_reducer.get();
 
     if closeness == 0f64 {
         lin = 1f64;

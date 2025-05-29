@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-webgraph = "0.3.0"
-webgraph-algo = "0.2.0"
+webgraph = { git = "https://github.com/tsagae/webgraph-rs.git", branch = "distance-change-event" }
+webgraph-algo = { git = "https://github.com/tsagae/webgraph-rs.git", branch = "distance-change-event" }
+
 dsi-progress-logger = "0.8.1"
 atomic-counter = "1.0.1"
 rayon = "1.10.0"
@@ -17,7 +18,6 @@ clap = { version = "4.5.20", features = ["derive"] }
 assert_approx_eq = "1.1.0"
 sync-cell-slice = "0.9.11"
 no-break = "0.1.2"
-openmp-reducer = "0.2.3"
 
 [profile.release]
 opt-level = 3            # like --release

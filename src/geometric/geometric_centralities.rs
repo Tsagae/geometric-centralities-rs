@@ -10,8 +10,7 @@ use std::thread;
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::prelude::breadth_first::{EventNoPred, EventPred};
-use webgraph_algo::visits::breadth_first::{ParFair, Seq};
+use webgraph_algo::visits::breadth_first::{EventNoPred, EventPred, ParFair, ParFairNoPred, Seq};
 use webgraph_algo::visits::{Parallel, Sequential};
 
 const DEFAULT_ALPHA: f64 = 0.5;
@@ -138,7 +137,7 @@ pub fn compute_single_node_par_visit(
         &thread_pool.current_num_threads()
     ));
 
-    let mut bfs = ParFair::new(graph);
+    let mut bfs = ParFairNoPred::new(graph);
     let res = single_visit_parallel(node, &mut bfs, &thread_pool);
 
     pl.done();
@@ -177,7 +176,7 @@ pub fn compute_all_par_visit(
     let mut exponential = vec![0f64; num_nodes].into_boxed_slice();
     let mut reachable = vec![0usize; num_nodes].into_boxed_slice();
 
-    let mut bfs = ParFair::new(graph);
+    let mut bfs = ParFairNoPred::new(graph);
 
     for node in 0..num_nodes {
         let result = single_visit_parallel(node, &mut bfs, &thread_pool);

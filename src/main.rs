@@ -3,6 +3,7 @@ use common_traits::Number;
 use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::betweenness::betweenness_centrality;
 use geometric_centralities::geometric;
+use geometric_centralities::geometric::GeometricCentralitiesResult;
 use log::info;
 use std::env;
 use std::fmt::Display;
@@ -84,11 +85,18 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
         let res = if args.parallel {
             geometric::compute_all_par_visit(&graph, args.threads, &mut ProgressLogger::default())
         } else {
-            geometric::compute(
+            let temp_res = geometric::compute(
                 &graph,
                 args.threads,
                 &mut ConcurrentWrapper::with_threshold(1000),
-            )
+            );
+            GeometricCentralitiesResult {
+                closeness: temp_res.iter().map(|item| item.closeness).collect(),
+                harmonic: temp_res.iter().map(|item| item.harmonic).collect(),
+                lin: temp_res.iter().map(|item| item.lin).collect(),
+                exponential: temp_res.iter().map(|item| item.exponential).collect(),
+                reachable: temp_res.iter().map(|item| item.reachable).collect(),
+            }
         };
 
         if args.save {

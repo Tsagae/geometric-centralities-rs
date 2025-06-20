@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-webgraph = { git = "https://github.com/tsagae/webgraph-rs.git", branch = "distance-change-event" }
-webgraph-algo = { git = "https://github.com/tsagae/webgraph-rs.git", branch = "distance-change-event" }
+webgraph = { git = "https://github.com/vigna/webgraph-rs.git" }
+webgraph-algo = { git = "https://github.com/vigna/webgraph-rs.git" }
 
 dsi-progress-logger = "0.8.1"
 atomic-counter = "1.0.1"

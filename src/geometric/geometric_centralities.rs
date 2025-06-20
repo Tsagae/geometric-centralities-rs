@@ -1,23 +1,22 @@
 use atomic_counter::AtomicCounter;
-use common_traits::{Atomic, AtomicNumber};
-use common_traits::{AtomicF64, Number};
+use common_traits::Number;
 use dsi_progress_logger::ProgressLog;
 use no_break::NoBreak;
+use openmp_reducer::{Reducer, SharedReducer};
 use rayon::ThreadPool;
 use std::num::NonZero;
 use std::ops::ControlFlow::Continue;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
 use std::thread;
 use std::thread::available_parallelism;
 use sync_cell_slice::SyncSlice;
 use webgraph::traits::RandomAccessGraph;
-use webgraph_algo::visits::breadth_first::{EventNoPred, EventPred, ParFair, ParFairNoPred, Seq};
+use webgraph_algo::prelude::breadth_first::{EventNoPred, EventPred};
+use webgraph_algo::visits::breadth_first::{ParFair, Seq};
 use webgraph_algo::visits::{Parallel, Sequential};
 
 const DEFAULT_ALPHA: f64 = 0.5;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SingleNodeResult {
     pub closeness: f64,
     pub harmonic: f64,
@@ -35,11 +34,20 @@ pub struct GeometricCentralitiesResult {
     pub reachable: Box<[usize]>,
 }
 
-pub fn compute<T: RandomAccessGraph + Sync>(
-    graph: &T,
+#[derive(Clone)]
+struct ReducerCollection<'a> {
+    closeness: SharedReducer<'a, usize, usize>,
+    harmonic: SharedReducer<'a, f64, f64>,
+    exponential: SharedReducer<'a, f64, f64>,
+    reachable: SharedReducer<'a, usize, usize>,
+}
+
+pub fn compute_custom<T: Default + Clone + Sync, F: Fn(&mut T, usize) + Sync>(
+    graph: &(impl RandomAccessGraph + Sync),
     num_of_threads: usize,
     pl: &mut impl ProgressLog,
-) -> GeometricCentralitiesResult {
+    op: F,
+) -> Box<[T]> {
     let num_nodes = graph.num_nodes();
 
     let num_of_threads = if num_of_threads == 0 {
@@ -53,23 +61,14 @@ pub fn compute<T: RandomAccessGraph + Sync>(
     cpl.item_name("visit").expected_updates(Some(num_nodes));
 
     cpl.start(format!(
-        "Computing geometric centralities with {} threads...",
+        "Computing geometric centralities (custom) with {} threads...",
         &num_of_threads
     ));
 
     let atomic_counter = atomic_counter::RelaxedCounter::new(0);
 
-    let mut closeness = vec![0f64; num_nodes].into_boxed_slice();
-    let mut harmonic = vec![0f64; num_nodes].into_boxed_slice();
-    let mut lin = vec![0f64; num_nodes].into_boxed_slice();
-    let mut exponential = vec![0f64; num_nodes].into_boxed_slice();
-    let mut reachable = vec![0usize; num_nodes].into_boxed_slice();
-
-    let closeness_sync_cell = closeness.as_sync_slice();
-    let harmonic_sync_cell = harmonic.as_sync_slice();
-    let lin_sync_cell = lin.as_sync_slice();
-    let exponential_sync_cell = exponential.as_sync_slice();
-    let reachable_sync_cell = reachable.as_sync_slice();
+    let mut data = vec![T::default(); num_nodes].into_boxed_slice();
+    let data_sync_cell = data.as_sync_slice();
 
     thread::scope(|scope| {
         for _ in 0..num_of_threads {
@@ -79,13 +78,12 @@ pub fn compute<T: RandomAccessGraph + Sync>(
 
                 let mut target_node = atomic_counter.inc();
                 while target_node < num_nodes {
-                    let centralities = single_visit_sequential(target_node, &mut bfs);
                     unsafe {
-                        closeness_sync_cell[target_node].set(centralities.closeness);
-                        harmonic_sync_cell[target_node].set(centralities.harmonic);
-                        lin_sync_cell[target_node].set(centralities.lin);
-                        exponential_sync_cell[target_node].set(centralities.exponential);
-                        reachable_sync_cell[target_node].set(centralities.reachable);
+                        data_sync_cell[target_node].set(single_visit_sequential_custom(
+                            target_node,
+                            &mut bfs,
+                            &op,
+                        ));
                     }
                     target_node = atomic_counter.inc();
                     cpl.update();
@@ -95,13 +93,40 @@ pub fn compute<T: RandomAccessGraph + Sync>(
     });
 
     cpl.done_with_count(num_nodes);
-    GeometricCentralitiesResult {
-        closeness,
-        harmonic,
-        lin,
-        exponential,
-        reachable,
+    data
+}
+
+pub fn compute(
+    graph: &(impl RandomAccessGraph + Sync),
+    num_of_threads: usize,
+    pl: &mut impl ProgressLog,
+) -> Box<[SingleNodeResult]> {
+    let alpha: f64 = 0.5;
+    let mut res = compute_custom(
+        &graph,
+        num_of_threads,
+        pl,
+        |anything: &mut SingleNodeResult, d| {
+            let hd = 1f64 / d as f64;
+            let ed = alpha.pow(d as f64);
+            anything.closeness += d as f64;
+            anything.harmonic += hd;
+            anything.reachable += 1;
+            anything.exponential += ed;
+        },
+    );
+
+    for item in &mut res {
+        item.reachable += 1;
+        if item.closeness == 0f64 {
+            item.lin = 1f64;
+        } else {
+            item.closeness = 1f64 / item.closeness;
+            item.lin = item.reachable as f64 * item.reachable as f64 * item.closeness;
+        }
     }
+
+    res
 }
 
 pub fn compute_single_node_par_visit(
@@ -131,7 +156,7 @@ pub fn compute_single_node_par_visit(
         &thread_pool.current_num_threads()
     ));
 
-    let mut bfs = ParFairNoPred::new(graph);
+    let mut bfs = ParFair::new(graph);
     let res = single_visit_parallel(node, &mut bfs, &thread_pool);
 
     pl.done();
@@ -170,7 +195,7 @@ pub fn compute_all_par_visit(
     let mut exponential = vec![0f64; num_nodes].into_boxed_slice();
     let mut reachable = vec![0usize; num_nodes].into_boxed_slice();
 
-    let mut bfs = ParFairNoPred::new(graph);
+    let mut bfs = ParFair::new(graph);
 
     for node in 0..num_nodes {
         let result = single_visit_parallel(node, &mut bfs, &thread_pool);
@@ -193,48 +218,35 @@ pub fn compute_all_par_visit(
     }
 }
 
-fn single_visit_sequential(
+fn single_visit_sequential_custom<T: Default + Clone>(
     start: usize,
     bfs: &mut Seq<&(impl RandomAccessGraph + Sync)>,
-) -> SingleNodeResult {
-    let mut closeness = 0f64;
-    let mut harmonic = 0f64;
-    let lin;
-    let mut exponential = 0f64;
-    let mut reachable: usize = 0;
-
+    op: impl Fn(&mut T, usize),
+) -> T {
+    let mut anything = T::default();
     bfs.reset();
     bfs.visit([start], |event| {
-        let base = DEFAULT_ALPHA;
-        if let EventPred::DistanceChanged { nodes, distance: d } = event {
-            reachable += nodes;
-            if d == 0 {
-                //Skip first
-                return Continue(());
+        match event {
+            EventPred::Init { .. } => {}
+            EventPred::Unknown {
+                node: _node,
+                pred: _pred,
+                distance,
+            } => {
+                let d = distance;
+                if d == 0 {
+                    //Skip first
+                    return Continue(());
+                }
+                op(&mut anything, d)
             }
-            let hd = 1f64 / d as f64;
-            let ed = base.pow(d as f64);
-            closeness += (d * nodes) as f64;
-            harmonic += hd * nodes as f64;
-            exponential += ed * nodes as f64;
+            EventPred::Known { .. } => {}
+            EventPred::Done { .. } => {}
         }
         Continue(())
     })
     .continue_value_no_break();
-
-    if closeness == 0f64 {
-        lin = 1f64;
-    } else {
-        closeness = 1f64 / closeness;
-        lin = reachable as f64 * reachable as f64 * closeness;
-    }
-    SingleNodeResult {
-        closeness,
-        harmonic,
-        lin,
-        exponential,
-        reachable,
-    }
+    anything
 }
 
 fn single_visit_parallel(
@@ -242,27 +254,42 @@ fn single_visit_parallel(
     visit: &mut ParFair<&(impl RandomAccessGraph + Sync)>,
     thread_pool: &ThreadPool,
 ) -> SingleNodeResult {
-    let closeness = AtomicUsize::new(0);
-    let harmonic = AtomicF64::new(0.);
-    let exponential = AtomicF64::new(0.);
-    let reachable = AtomicUsize::new(0);
     let base = DEFAULT_ALPHA;
     visit.reset();
+
+    let usize_reducer_func = |global: &mut usize, local: &usize| *global += *local;
+    let float_reducer_func = |global: &mut f64, local: &f64| *global += *local;
+
+    let closeness_reducer = Reducer::<usize>::new(0, usize_reducer_func);
+    let harmonic_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
+    let exponential_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
+    let reachable_reducer = Reducer::<usize>::new(0, usize_reducer_func);
+
     visit
-        .par_visit(
+        .par_visit_with(
             [start],
-            |event| {
-                if let EventNoPred::DistanceChanged { nodes, distance: d } = event {
-                    reachable.fetch_add(nodes, Relaxed);
-                    if d == 0 {
-                        //Skip first
-                        return Continue(());
+            ReducerCollection {
+                closeness: closeness_reducer.share(),
+                harmonic: harmonic_reducer.share(),
+                exponential: exponential_reducer.share(),
+                reachable: reachable_reducer.share(),
+            },
+            |cloned_reducer_collection, event| {
+                match event {
+                    EventNoPred::Unknown { distance, .. } => {
+                        let d = distance;
+                        *cloned_reducer_collection.reachable.as_mut() += 1;
+                        if d == 0 {
+                            //Skip first
+                            return Continue(());
+                        }
+                        let hd = 1f64 / d as f64;
+                        let ed = base.pow(d as f64);
+                        *cloned_reducer_collection.closeness.as_mut() += d;
+                        *cloned_reducer_collection.harmonic.as_mut() += hd;
+                        *cloned_reducer_collection.exponential.as_mut() += ed;
                     }
-                    let hd = 1f64 / d as f64;
-                    let ed = base.pow(d as f64);
-                    closeness.fetch_add(d * nodes, Relaxed);
-                    harmonic.fetch_add(hd * nodes as f64, Relaxed);
-                    exponential.fetch_add(ed * nodes as f64, Relaxed);
+                    _ => {}
                 }
                 Continue(())
             },
@@ -270,11 +297,11 @@ fn single_visit_parallel(
         )
         .continue_value_no_break();
 
-    let mut closeness = closeness.into_inner() as f64;
-    let harmonic = harmonic.into_inner();
-    let exponential = exponential.into_inner();
-    let reachable = reachable.into_inner();
+    let mut closeness = closeness_reducer.get() as f64;
+    let harmonic = harmonic_reducer.get();
     let lin;
+    let exponential = exponential_reducer.get();
+    let reachable = reachable_reducer.get();
 
     if closeness == 0f64 {
         lin = 1f64;
@@ -294,15 +321,95 @@ fn single_visit_parallel(
 
 #[cfg(test)]
 mod tests {
-    use crate::geometric::geometric_centralities;
+    use crate::geometric;
+    use crate::geometric::{geometric_centralities, GeometricCentralitiesResult};
     use crate::utils::{new_directed_cycle, transpose_arc_list};
     use assert_approx_eq::assert_approx_eq;
+    use dsi_progress_logger::ConcurrentWrapper;
     use webgraph::prelude::VecGraph;
+    use webgraph::traits::SequentialLabeling;
 
-    #[test]
-    fn test_compute() {
-        let graph = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
+    #[derive(Clone, Default)]
+    struct CustomGeomCentralityResult {
+        closeness: f64,
+        harmonic: f64,
+        lin: f64,
+        reachable: usize,
+    }
+
+    fn custom_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
+        let mut res = geometric::compute_custom(
+            &graph,
+            0,
+            &mut ConcurrentWrapper::with_threshold(1000),
+            |anything: &mut CustomGeomCentralityResult, d| {
+                let hd = 1f64 / d as f64;
+                anything.closeness += d as f64;
+                anything.harmonic += hd;
+                anything.reachable += 1;
+            },
+        );
+
+        for item in &mut res {
+            item.reachable += 1;
+            if item.closeness == 0f64 {
+                item.lin = 1f64;
+            } else {
+                item.closeness = 1f64 / item.closeness;
+                item.lin = item.reachable as f64 * item.reachable as f64 * item.closeness;
+            }
+        }
+
+        GeometricCentralitiesResult {
+            closeness: res.iter().map(|item| item.closeness).collect(),
+            harmonic: res.iter().map(|item| item.harmonic).collect(),
+            lin: res.iter().map(|item| item.lin).collect(),
+            exponential: Box::new([]),
+            reachable: Box::new([]),
+        }
+    }
+
+    fn standard_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
         let res = geometric_centralities::compute(&graph, 0, dsi_progress_logger::no_logging!());
+        GeometricCentralitiesResult {
+            closeness: res.iter().map(|item| item.closeness).collect(),
+            harmonic: res.iter().map(|item| item.harmonic).collect(),
+            lin: res.iter().map(|item| item.lin).collect(),
+            exponential: res.iter().map(|item| item.exponential).collect(),
+            reachable: res.iter().map(|item| item.reachable).collect(),
+        }
+    }
+
+    fn all_par_visit_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
+        geometric_centralities::compute_all_par_visit(&graph, 0, dsi_progress_logger::no_logging!())
+    }
+
+    fn single_node_par_visit_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
+        let num_nodes = graph.num_nodes();
+        let mut res = GeometricCentralitiesResult {
+            closeness: vec![0f64; num_nodes].into_boxed_slice(),
+            harmonic: vec![0f64; num_nodes].into_boxed_slice(),
+            lin: vec![0f64; num_nodes].into_boxed_slice(),
+            exponential: Box::new([]),
+            reachable: Box::new([]),
+        };
+        for n in 0..num_nodes {
+            let single_node_res = geometric_centralities::compute_single_node_par_visit(
+                &graph,
+                0,
+                n,
+                dsi_progress_logger::no_logging!(),
+            );
+            res.closeness[n] = single_node_res.closeness;
+            res.harmonic[n] = single_node_res.harmonic;
+            res.lin[n] = single_node_res.lin;
+        }
+        res
+    }
+
+    fn compute_generic(strategy: fn(&VecGraph) -> GeometricCentralitiesResult) {
+        let graph = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
+        let res = strategy(&graph);
 
         assert_eq!(res.closeness[0], 0f64);
         assert_eq!(res.closeness[1], 1f64);
@@ -317,12 +424,10 @@ mod tests {
         assert_eq!(res.harmonic[2], 3f64 / 2f64);
     }
 
-    #[test]
-    fn test_compute_cycle() {
+    fn compute_cycle_generic(strategy: fn(&VecGraph) -> GeometricCentralitiesResult) {
         for size in [10, 50, 100] {
             let graph = new_directed_cycle(size);
-            let res =
-                geometric_centralities::compute(&graph, 0, dsi_progress_logger::no_logging!());
+            let res = strategy(&graph);
 
             let mut expected = Vec::new();
 
@@ -336,51 +441,45 @@ mod tests {
             expected.fill(s);
             (0..size).for_each(|i| assert_approx_eq!(res.harmonic[i], expected[i], 1E-14f64));
         }
+    }
+
+    #[test]
+    fn test_compute_standard() {
+        compute_generic(standard_strategy);
+    }
+
+    #[test]
+    fn test_compute_cycle_standard() {
+        compute_cycle_generic(standard_strategy);
     }
 
     #[test]
     fn test_compute_all_par_visit() {
-        let graph = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
-        let res = geometric_centralities::compute_all_par_visit(
-            &graph,
-            0,
-            dsi_progress_logger::no_logging!(),
-        );
-
-        assert_eq!(res.closeness[0], 0f64);
-        assert_eq!(res.closeness[1], 1f64);
-        assert_eq!(res.closeness[2], 1f64 / 3f64);
-
-        assert_eq!(res.lin[0], 1f64);
-        assert_eq!(res.lin[1], 4f64);
-        assert_eq!(res.lin[2], 3f64);
-
-        assert_eq!(res.harmonic[0], 0f64);
-        assert_eq!(res.harmonic[1], 1f64);
-        assert_eq!(res.harmonic[2], 3f64 / 2f64);
+        compute_generic(all_par_visit_strategy);
     }
 
     #[test]
-    fn test_compute_all_par_visit_cycle() {
-        for size in [10, 50, 100] {
-            let graph = new_directed_cycle(size);
-            let res = geometric_centralities::compute_all_par_visit(
-                &graph,
-                0,
-                dsi_progress_logger::no_logging!(),
-            );
+    fn test_compute_cycle_all_par_visit() {
+        compute_cycle_generic(all_par_visit_strategy);
+    }
 
-            let mut expected = Vec::new();
+    #[test]
+    fn test_compute_custom() {
+        compute_generic(custom_strategy);
+    }
 
-            expected.resize(size, 2. / (size as f64 * (size as f64 - 1.)));
-            (0..size).for_each(|i| assert_approx_eq!(res.closeness[i], expected[i], 1E-15f64));
+    #[test]
+    fn test_compute_cycle_custom() {
+        compute_cycle_generic(custom_strategy);
+    }
 
-            expected.fill(size as f64 * 2. / (size as f64 - 1.));
-            (0..size).for_each(|i| assert_approx_eq!(res.lin[i], expected[i], 1E-15f64));
+    #[test]
+    fn test_compute_single_node_par_visit() {
+        compute_generic(single_node_par_visit_strategy);
+    }
 
-            let s = (1..size).fold(0f64, |acc, i| acc + 1. / (i as f64));
-            expected.fill(s);
-            (0..size).for_each(|i| assert_approx_eq!(res.harmonic[i], expected[i], 1E-14f64));
-        }
+    #[test]
+    fn test_compute_cycle_single_node_par_visit() {
+        compute_cycle_generic(single_node_par_visit_strategy);
     }
 }

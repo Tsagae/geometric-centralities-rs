@@ -107,6 +107,7 @@ pub fn compute(
         num_of_threads,
         pl,
         |anything: &mut SingleNodeResult, num_nodes, distance| {
+            anything.reachable += num_nodes;
             if distance == 0 {
                 return;
             }
@@ -114,13 +115,11 @@ pub fn compute(
             let ed = alpha.pow(distance as f64);
             anything.closeness += (distance * num_nodes) as f64;
             anything.harmonic += hd * num_nodes as f64;
-            anything.reachable += num_nodes;
             anything.exponential += ed * num_nodes as f64;
         },
     );
 
     for item in &mut res {
-        item.reachable += 1;
         if item.closeness == 0f64 {
             item.lin = 1f64;
         } else {

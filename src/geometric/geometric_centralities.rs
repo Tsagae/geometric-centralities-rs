@@ -2,13 +2,13 @@ use atomic_counter::AtomicCounter;
 use common_traits::Number;
 use dsi_progress_logger::ProgressLog;
 use no_break::NoBreak;
-use openmp_reducer::{Reducer, SharedReducer};
+use openmp_reducer::SharedReducer;
 use rayon::ThreadPool;
 use std::num::NonZero;
 use std::ops::ControlFlow::Continue;
 use std::thread;
 use std::thread::available_parallelism;
-use sync_cell_slice::SyncSlice;
+use sync_cell_slice::{SyncCell, SyncSlice};
 use webgraph::traits::RandomAccessGraph;
 use webgraph_algo::prelude::breadth_first::{EventNoPred, EventPred};
 use webgraph_algo::visits::breadth_first::{ParFair, Seq};
@@ -32,14 +32,6 @@ pub struct GeometricCentralitiesResult {
     pub lin: Box<[f64]>,
     pub exponential: Box<[f64]>,
     pub reachable: Box<[usize]>,
-}
-
-#[derive(Clone)]
-struct ReducerCollection<'a> {
-    closeness: SharedReducer<'a, usize, usize>,
-    harmonic: SharedReducer<'a, f64, f64>,
-    exponential: SharedReducer<'a, f64, f64>,
-    reachable: SharedReducer<'a, usize, usize>,
 }
 
 pub fn compute_custom<T: Default + Clone + Sync, F: Fn(&mut T, usize, usize) + Sync>(
@@ -101,7 +93,7 @@ pub fn compute(
     num_of_threads: usize,
     pl: &mut impl ProgressLog,
 ) -> Box<[SingleNodeResult]> {
-    let alpha: f64 = 0.5;
+    let alpha: f64 = DEFAULT_ALPHA;
     let mut res = compute_custom(
         &graph,
         num_of_threads,
@@ -249,46 +241,34 @@ fn single_visit_sequential_custom<T: Default + Clone>(
     anything
 }
 
-fn single_visit_parallel(
+// TODO: add example to doc
+/// Performs a parallel breadth-first visit from a start node and applies a custom operation
+/// to compute metrics based on the distances of visited nodes.
+///
+/// # Arguments
+///
+/// * `start`: The source node to start the visit from
+/// * `bfs`: The sequential bfs
+/// * `op`: Callback called at every change of distance with a reference to the mutable item, the number of nodes and the distance
+///
+/// returns: A custom type T containing the computed metrics for the start node
+fn single_visit_parallel_custom<T: Default + Clone + Sync>(
     start: usize,
     visit: &mut ParFair<&(impl RandomAccessGraph + Sync)>,
     thread_pool: &ThreadPool,
-) -> SingleNodeResult {
-    let base = DEFAULT_ALPHA;
+    op: impl Fn(&mut T, usize, usize) + Sync,
+) -> T {
+    let anything = SyncCell::new(T::default());
     visit.reset();
 
-    let usize_reducer_func = |global: &mut usize, local: &usize| *global += *local;
-    let float_reducer_func = |global: &mut f64, local: &f64| *global += *local;
-
-    let closeness_reducer = Reducer::<usize>::new(0, usize_reducer_func);
-    let harmonic_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
-    let exponential_reducer = Reducer::<f64>::new(0f64, float_reducer_func);
-    let reachable_reducer = Reducer::<usize>::new(0, usize_reducer_func);
-
     visit
-        .par_visit_with(
+        .par_visit(
             [start],
-            ReducerCollection {
-                closeness: closeness_reducer.share(),
-                harmonic: harmonic_reducer.share(),
-                exponential: exponential_reducer.share(),
-                reachable: reachable_reducer.share(),
-            },
-            |cloned_reducer_collection, event| {
+            |event| {
                 match event {
-                    EventNoPred::Unknown { distance, .. } => {
-                        let d = distance;
-                        *cloned_reducer_collection.reachable.as_mut() += 1;
-                        if d == 0 {
-                            //Skip first
-                            return Continue(());
-                        }
-                        let hd = 1f64 / d as f64;
-                        let ed = base.pow(d as f64);
-                        *cloned_reducer_collection.closeness.as_mut() += d;
-                        *cloned_reducer_collection.harmonic.as_mut() += hd;
-                        *cloned_reducer_collection.exponential.as_mut() += ed;
-                    }
+                    EventNoPred::DistanceChanged { nodes, distance } => unsafe {
+                        op(&mut *anything.as_ptr(), nodes, distance)
+                    },
                     _ => {}
                 }
                 Continue(())
@@ -296,27 +276,40 @@ fn single_visit_parallel(
             thread_pool,
         )
         .continue_value_no_break();
+    anything.into_inner()
+}
 
-    let mut closeness = closeness_reducer.get() as f64;
-    let harmonic = harmonic_reducer.get();
-    let lin;
-    let exponential = exponential_reducer.get();
-    let reachable = reachable_reducer.get();
+fn single_visit_parallel(
+    start: usize,
+    visit: &mut ParFair<&(impl RandomAccessGraph + Sync)>,
+    thread_pool: &ThreadPool,
+) -> SingleNodeResult {
+    let alpha: f64 = DEFAULT_ALPHA;
+    let mut res = single_visit_parallel_custom(
+        start,
+        visit,
+        thread_pool,
+        |anything: &mut SingleNodeResult, num_nodes, distance| {
+            anything.reachable += num_nodes;
+            if distance == 0 {
+                return;
+            }
+            let hd = 1f64 / distance as f64;
+            let ed = alpha.pow(distance as f64);
+            anything.closeness += (distance * num_nodes) as f64;
+            anything.harmonic += hd * num_nodes as f64;
+            anything.exponential += ed * num_nodes as f64;
+        },
+    );
 
-    if closeness == 0f64 {
-        lin = 1f64;
+    if res.closeness == 0f64 {
+        res.lin = 1f64;
     } else {
-        closeness = 1f64 / closeness;
-        lin = reachable as f64 * reachable as f64 * closeness;
+        res.closeness = 1f64 / res.closeness;
+        res.lin = res.reachable as f64 * res.reachable as f64 * res.closeness;
     }
 
-    SingleNodeResult {
-        closeness,
-        harmonic,
-        lin,
-        exponential,
-        reachable,
-    }
+    res
 }
 
 #[cfg(test)]
@@ -326,14 +319,6 @@ mod tests {
     use assert_approx_eq::assert_approx_eq;
     use webgraph::prelude::VecGraph;
     use webgraph::traits::SequentialLabeling;
-
-    #[derive(Clone, Default)]
-    struct CustomGeomCentralityResult {
-        closeness: f64,
-        harmonic: f64,
-        lin: f64,
-        reachable: usize,
-    }
 
     fn standard_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
         let res = geometric_centralities::compute(&graph, 0, dsi_progress_logger::no_logging!());

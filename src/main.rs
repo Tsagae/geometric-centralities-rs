@@ -2,7 +2,6 @@ use clap::Parser;
 use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::betweenness::betweenness_centrality;
 use geometric_centralities::geometric;
-use geometric_centralities::geometric::GeometricCentralitiesResult;
 use log::info;
 use std::env;
 use std::fmt::Display;
@@ -94,42 +93,35 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
         let res = if args.parallel {
             geometric::compute_all_par_visit(&graph, args.threads, &mut ProgressLogger::default())
         } else {
-            let temp_res = geometric::compute(
+            geometric::compute(
                 &graph,
                 args.threads,
                 &mut ConcurrentWrapper::with_threshold(1000),
-            );
-            GeometricCentralitiesResult {
-                closeness: temp_res.iter().map(|item| item.closeness).collect(),
-                harmonic: temp_res.iter().map(|item| item.harmonic).collect(),
-                lin: temp_res.iter().map(|item| item.lin).collect(),
-                exponential: temp_res.iter().map(|item| item.exponential).collect(),
-                reachable: temp_res.iter().map(|item| item.reachable).collect(),
-            }
+            )
         };
 
         if args.save {
             write_to_file(
                 &results_dir,
                 "closeness",
-                float_to_string_iter(res.closeness.iter().map(|&f| f)),
+                float_to_string_iter(res.iter().map(|f| f.closeness)),
             );
             write_to_file(
                 &results_dir,
                 "lin",
-                float_to_string_iter(res.lin.iter().map(|&f| f)),
+                float_to_string_iter(res.iter().map(|f| f.lin)),
             );
             write_to_file(
                 &results_dir,
                 "exponential",
-                float_to_string_iter(res.exponential.iter().map(|&f| f)),
+                float_to_string_iter(res.iter().map(|f| f.exponential)),
             );
             write_to_file(
                 &results_dir,
                 "harmonic",
-                float_to_string_iter(res.harmonic.iter().map(|&f| f)),
+                float_to_string_iter(res.iter().map(|f| f.harmonic)),
             );
-            write_to_file(&results_dir, "reachable", res.reachable.iter());
+            write_to_file(&results_dir, "reachable", res.iter().map(|f| f.reachable));
         }
     }
 

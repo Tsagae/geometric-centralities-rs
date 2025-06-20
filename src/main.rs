@@ -6,7 +6,7 @@ use log::info;
 use std::env;
 use std::fmt::Display;
 use std::io::Write;
-use webgraph::prelude::{BvGraph, VecGraph};
+use webgraph::prelude::{BvGraph, CsrGraph, VecGraph};
 use webgraph::traits::RandomAccessGraph;
 
 #[derive(Parser, Debug)]
@@ -64,9 +64,10 @@ fn main() -> anyhow::Result<()> {
         .load()
         .expect("Failed loading graph");
 
+    
     if args.decompress {
         info!("Decompressing graph...");
-        let graph = decompress_graph(bv_graph);
+        let graph: CsrGraph = CsrGraph::from_seq_graph(&bv_graph);
         info!("Graph ready");
         run(graph, args, &results_dir);
     } else {

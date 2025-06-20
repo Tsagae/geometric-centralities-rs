@@ -42,7 +42,7 @@ struct ReducerCollection<'a> {
     reachable: SharedReducer<'a, usize, usize>,
 }
 
-pub fn compute_custom<T: Default + Clone + Sync, F: Fn(&mut T, usize) + Sync>(
+pub fn compute_custom<T: Default + Clone + Sync, F: Fn(&mut T, usize, usize) + Sync>(
     graph: &(impl RandomAccessGraph + Sync),
     num_of_threads: usize,
     pl: &mut impl ProgressLog,
@@ -106,13 +106,16 @@ pub fn compute(
         &graph,
         num_of_threads,
         pl,
-        |anything: &mut SingleNodeResult, d| {
-            let hd = 1f64 / d as f64;
-            let ed = alpha.pow(d as f64);
-            anything.closeness += d as f64;
-            anything.harmonic += hd;
-            anything.reachable += 1;
-            anything.exponential += ed;
+        |anything: &mut SingleNodeResult, num_nodes, distance| {
+            if distance == 0 {
+                return;
+            }
+            let hd = 1f64 / distance as f64;
+            let ed = alpha.pow(distance as f64);
+            anything.closeness += (distance * num_nodes) as f64;
+            anything.harmonic += hd * num_nodes as f64;
+            anything.reachable += num_nodes;
+            anything.exponential += ed * num_nodes as f64;
         },
     );
 
@@ -218,30 +221,28 @@ pub fn compute_all_par_visit(
     }
 }
 
+// TODO: add example to doc
+/// Performs a sequential breadth-first visit from a start node and applies a custom operation
+/// to compute metrics based on the distances of visited nodes.
+///
+/// # Arguments
+///
+/// * `start`: The source node to start the visit from
+/// * `bfs`: The sequential bfs
+/// * `op`: Callback called at every change of distance with a reference to the mutable item, the number of nodes and the distance
+///
+/// returns: A custom type T containing the computed metrics for the start node
 fn single_visit_sequential_custom<T: Default + Clone>(
     start: usize,
     bfs: &mut Seq<&(impl RandomAccessGraph + Sync)>,
-    op: impl Fn(&mut T, usize),
+    op: impl Fn(&mut T, usize, usize),
 ) -> T {
     let mut anything = T::default();
     bfs.reset();
     bfs.visit([start], |event| {
         match event {
-            EventPred::Init { .. } => {}
-            EventPred::Unknown {
-                node: _node,
-                pred: _pred,
-                distance,
-            } => {
-                let d = distance;
-                if d == 0 {
-                    //Skip first
-                    return Continue(());
-                }
-                op(&mut anything, d)
-            }
-            EventPred::Known { .. } => {}
-            EventPred::Done { .. } => {}
+            EventPred::DistanceChanged { nodes, distance } => op(&mut anything, nodes, distance),
+            _ => {}
         }
         Continue(())
     })
@@ -321,11 +322,9 @@ fn single_visit_parallel(
 
 #[cfg(test)]
 mod tests {
-    use crate::geometric;
     use crate::geometric::{geometric_centralities, GeometricCentralitiesResult};
     use crate::utils::{new_directed_cycle, transpose_arc_list};
     use assert_approx_eq::assert_approx_eq;
-    use dsi_progress_logger::ConcurrentWrapper;
     use webgraph::prelude::VecGraph;
     use webgraph::traits::SequentialLabeling;
 
@@ -335,38 +334,6 @@ mod tests {
         harmonic: f64,
         lin: f64,
         reachable: usize,
-    }
-
-    fn custom_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
-        let mut res = geometric::compute_custom(
-            &graph,
-            0,
-            &mut ConcurrentWrapper::with_threshold(1000),
-            |anything: &mut CustomGeomCentralityResult, d| {
-                let hd = 1f64 / d as f64;
-                anything.closeness += d as f64;
-                anything.harmonic += hd;
-                anything.reachable += 1;
-            },
-        );
-
-        for item in &mut res {
-            item.reachable += 1;
-            if item.closeness == 0f64 {
-                item.lin = 1f64;
-            } else {
-                item.closeness = 1f64 / item.closeness;
-                item.lin = item.reachable as f64 * item.reachable as f64 * item.closeness;
-            }
-        }
-
-        GeometricCentralitiesResult {
-            closeness: res.iter().map(|item| item.closeness).collect(),
-            harmonic: res.iter().map(|item| item.harmonic).collect(),
-            lin: res.iter().map(|item| item.lin).collect(),
-            exponential: Box::new([]),
-            reachable: Box::new([]),
-        }
     }
 
     fn standard_strategy(graph: &VecGraph) -> GeometricCentralitiesResult {
@@ -461,16 +428,6 @@ mod tests {
     #[test]
     fn test_compute_cycle_all_par_visit() {
         compute_cycle_generic(all_par_visit_strategy);
-    }
-
-    #[test]
-    fn test_compute_custom() {
-        compute_generic(custom_strategy);
-    }
-
-    #[test]
-    fn test_compute_cycle_custom() {
-        compute_cycle_generic(custom_strategy);
     }
 
     #[test]

@@ -1,11 +1,13 @@
 use clap::Parser;
-use dsi_progress_logger::{ConcurrentWrapper, ProgressLogger};
+use dsi_progress_logger::{no_logging, ConcurrentWrapper, ProgressLogger};
 use geometric_centralities::betweenness::betweenness_centrality;
 use geometric_centralities::geometric;
+use geometric_centralities::geometric::DefaultGeometric;
 use log::info;
 use std::env;
 use std::fmt::Display;
 use std::io::Write;
+use std::time::SystemTime;
 use webgraph::prelude::{BvGraph, CsrGraph, VecGraph};
 use webgraph::traits::RandomAccessGraph;
 
@@ -21,12 +23,6 @@ struct MainArgs {
     #[arg(short = 'd', long)]
     decompress: bool,
 
-    #[arg(long)]
-    parallel: bool,
-
-    #[arg(long)]
-    parallel_single_node: bool,
-
     #[arg(short = 't', long, default_value = "0")]
     threads: usize,
 
@@ -35,6 +31,15 @@ struct MainArgs {
 
     #[arg(long)]
     geometric: bool,
+
+    #[arg(long)]
+    geometric_parallel: bool,
+
+    #[arg(long)]
+    geometric_parallel_single_node: bool,
+
+    #[arg(long, default_value = "0")]
+    start_node: usize,
 
     #[arg(long)]
     betweenness: bool,
@@ -64,7 +69,6 @@ fn main() -> anyhow::Result<()> {
         .load()
         .expect("Failed loading graph");
 
-    
     if args.decompress {
         info!("Decompressing graph...");
         let graph: CsrGraph = CsrGraph::from_seq_graph(&bv_graph);
@@ -74,66 +78,36 @@ fn main() -> anyhow::Result<()> {
         run(bv_graph, args, &results_dir);
     }
 
-    info!("Done");
-
     Ok(())
 }
 
 fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) {
+    let start_time = SystemTime::now();
+    let mut did_run = false;
     if args.geometric {
-        if args.parallel_single_node {
-            geometric::compute_single_node_par_visit(
-                &graph,
-                args.threads,
-                0,
-                &mut ProgressLogger::default(),
-            );
-            return;
-        }
-
-        let res = if args.parallel {
-            geometric::compute_all_par_visit(&graph, args.threads, &mut ProgressLogger::default())
-        } else {
-            geometric::compute(
-                &graph,
-                args.threads,
-                &mut ConcurrentWrapper::with_threshold(1000),
-            )
-        };
-
+        did_run = true;
+        let res = geometric::compute(&graph, args.threads, no_logging!());
         if args.save {
-            write_to_file(
-                &results_dir,
-                "closeness",
-                float_to_string_iter(res.iter().map(|f| f.closeness)),
-            );
-            write_to_file(
-                &results_dir,
-                "lin",
-                float_to_string_iter(res.iter().map(|f| f.lin)),
-            );
-            write_to_file(
-                &results_dir,
-                "exponential",
-                float_to_string_iter(res.iter().map(|f| f.exponential)),
-            );
-            write_to_file(
-                &results_dir,
-                "harmonic",
-                float_to_string_iter(res.iter().map(|f| f.harmonic)),
-            );
-            write_to_file(&results_dir, "reachable", res.iter().map(|f| f.reachable));
+            save_geometric(&res, results_dir)
         }
-    }
-
-    if args.betweenness {
-        let betweenness = betweenness_centrality::compute(
+    } else if args.geometric_parallel {
+        did_run = true;
+        let res = geometric::compute_all_par_visit(&graph, args.threads, no_logging!());
+        if args.save {
+            save_geometric(&res, results_dir)
+        }
+    } else if args.geometric_parallel_single_node {
+        did_run = true;
+        let res = geometric::compute_single_node_par_visit(
             &graph,
             args.threads,
-            &mut ConcurrentWrapper::with_threshold(1000),
-        )
-        .unwrap();
-
+            args.start_node,
+            no_logging!(),
+        );
+    } else if args.betweenness {
+        did_run = true;
+        let betweenness =
+            betweenness_centrality::compute(&graph, args.threads, no_logging!()).unwrap();
         if args.save {
             write_to_file(
                 &results_dir,
@@ -142,6 +116,35 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
             );
         }
     }
+    if !did_run {
+        panic!("Nothing was run")
+    }
+    let elapsed = start_time.elapsed().unwrap();
+    println!("{}", elapsed.as_secs());
+}
+
+fn save_geometric(res: &[DefaultGeometric], results_dir: &str) {
+    write_to_file(
+        &results_dir,
+        "closeness",
+        float_to_string_iter(res.iter().map(|f| f.closeness)),
+    );
+    write_to_file(
+        &results_dir,
+        "lin",
+        float_to_string_iter(res.iter().map(|f| f.lin)),
+    );
+    write_to_file(
+        &results_dir,
+        "exponential",
+        float_to_string_iter(res.iter().map(|f| f.exponential)),
+    );
+    write_to_file(
+        &results_dir,
+        "harmonic",
+        float_to_string_iter(res.iter().map(|f| f.harmonic)),
+    );
+    write_to_file(&results_dir, "reachable", res.iter().map(|f| f.reachable));
 }
 
 fn float_to_string_iter(iter: impl Iterator<Item = f64>) -> impl Iterator<Item = String> {

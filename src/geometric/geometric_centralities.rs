@@ -250,7 +250,7 @@ fn single_visit_sequential_custom<T: Default + Clone>(
     bfs.reset();
     bfs.visit([start], |event| {
         match event {
-            EventPred::DistanceChanged { nodes, distance } => op(&mut anything, nodes, distance),
+            EventPred::FrontierSize { distance, size } => op(&mut anything, size, distance),
             _ => {}
         }
         Continue(())
@@ -284,8 +284,8 @@ fn single_visit_parallel_custom<T: Default + Clone + Sync>(
             [start],
             |event| {
                 match event {
-                    EventNoPred::DistanceChanged { nodes, distance } => unsafe {
-                        op(&mut *anything.as_ptr(), nodes, distance)
+                    EventNoPred::FrontierSize {  distance, sizes } => unsafe {
+                        op(&mut *anything.as_ptr(), sizes, distance)
                     },
                     _ => {}
                 }

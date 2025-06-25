@@ -120,7 +120,7 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
         panic!("Nothing was run")
     }
     let elapsed = start_time.elapsed().unwrap();
-    println!("{}", elapsed.as_secs());
+    println!("{}", elapsed.as_millis());
 }
 
 fn save_geometric(res: &[DefaultGeometric], results_dir: &str) {

@@ -8,7 +8,7 @@ use std::env;
 use std::fmt::Display;
 use std::io::Write;
 use std::time::SystemTime;
-use webgraph::prelude::{BvGraph, CsrGraph, VecGraph};
+use webgraph::prelude::{BvGraph, CsrGraph};
 use webgraph::traits::RandomAccessGraph;
 
 #[derive(Parser, Debug)]
@@ -161,20 +161,6 @@ fn save_geometric(res: &[DefaultGeometric], results_dir: &str) {
 
 fn float_to_string_iter(iter: impl Iterator<Item = f64>) -> impl Iterator<Item = String> {
     iter.into_iter().map(|f| format!("{f:.20}"))
-}
-
-
-fn decompress_graph(g: impl RandomAccessGraph) -> VecGraph {
-    let mut vg = VecGraph::new();
-    for node in 0..g.num_nodes() {
-        vg.add_node(node);
-        vg.add_arcs(
-            g.successors(node)
-                .into_iter()
-                .map(|successor| (node, successor)),
-        );
-    }
-    vg
 }
 
 fn write_to_file(base_path: &str, filename: &str, iter: impl Iterator<Item = impl Display>) {

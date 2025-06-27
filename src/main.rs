@@ -112,6 +112,7 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
             args.start_node,
             &mut ConcurrentWrapper::with_threshold(1000),
         );
+        println!("reachable {}", res.reachable)
     } else if args.betweenness {
         did_run = true;
         let betweenness = betweenness_centrality::compute(

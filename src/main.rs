@@ -1,5 +1,5 @@
 use clap::Parser;
-use dsi_progress_logger::{no_logging, ConcurrentWrapper, ProgressLogger};
+use dsi_progress_logger::ConcurrentWrapper;
 use geometric_centralities::betweenness::betweenness_centrality;
 use geometric_centralities::geometric;
 use geometric_centralities::geometric::DefaultGeometric;
@@ -86,13 +86,21 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
     let mut did_run = false;
     if args.geometric {
         did_run = true;
-        let res = geometric::compute(&graph, args.threads, no_logging!());
+        let res = geometric::compute(
+            &graph,
+            args.threads,
+            &mut ConcurrentWrapper::with_threshold(1000),
+        );
         if args.save {
             save_geometric(&res, results_dir)
         }
     } else if args.geometric_parallel {
         did_run = true;
-        let res = geometric::compute_all_par_visit(&graph, args.threads, no_logging!());
+        let res = geometric::compute_all_par_visit(
+            &graph,
+            args.threads,
+            &mut ConcurrentWrapper::with_threshold(1000),
+        );
         if args.save {
             save_geometric(&res, results_dir)
         }
@@ -102,12 +110,16 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
             &graph,
             args.threads,
             args.start_node,
-            no_logging!(),
+            &mut ConcurrentWrapper::with_threshold(1000),
         );
     } else if args.betweenness {
         did_run = true;
-        let betweenness =
-            betweenness_centrality::compute(&graph, args.threads, no_logging!()).unwrap();
+        let betweenness = betweenness_centrality::compute(
+            &graph,
+            args.threads,
+            &mut ConcurrentWrapper::with_threshold(1000),
+        )
+        .unwrap();
         if args.save {
             write_to_file(
                 &results_dir,
@@ -150,6 +162,7 @@ fn save_geometric(res: &[DefaultGeometric], results_dir: &str) {
 fn float_to_string_iter(iter: impl Iterator<Item = f64>) -> impl Iterator<Item = String> {
     iter.into_iter().map(|f| format!("{f:.20}"))
 }
+
 
 fn decompress_graph(g: impl RandomAccessGraph) -> VecGraph {
     let mut vg = VecGraph::new();

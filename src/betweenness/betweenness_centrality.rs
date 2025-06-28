@@ -2,11 +2,11 @@
 #![allow(unused_labels)]
 
 use atomic_counter::AtomicCounter;
+use common_traits::{Atomic, AtomicF64, AtomicNumber};
 use dsi_progress_logger::ProgressLog;
 use std::num::NonZero;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::Mutex;
 use std::thread::{self, available_parallelism};
 use webgraph::traits::RandomAccessGraph;
 
@@ -39,7 +39,8 @@ pub fn compute(
 
     let atomic_counter = atomic_counter::RelaxedCounter::new(0);
     let shared_overflow_check = AtomicBool::new(false);
-    let betweenness = Mutex::new(vec![0.; num_nodes].into_boxed_slice());
+    let mut betweenness = vec![0f64; num_nodes].into_boxed_slice();
+    let atomic_betweenness: &[AtomicF64] = AtomicF64::from_mut_slice(&mut betweenness);
 
     thread::scope(|scope| {
         for _ in 0..num_of_threads {
@@ -120,11 +121,8 @@ pub fn compute(
                         }
                     }
 
-                    {
-                        let mut lock_betweenness = betweenness.lock().unwrap();
-                        for &node in &queue[1..] {
-                            lock_betweenness[node] += delta[node];
-                        }
+                    for &node in &queue[1..] {
+                        atomic_betweenness[node].fetch_add(delta[node], Relaxed);
                     }
                     cpl.update();
                 }
@@ -138,7 +136,7 @@ pub fn compute(
 
     cpl.done_with_count(num_nodes);
 
-    Ok(betweenness.into_inner().unwrap())
+    Ok(betweenness)
 }
 
 #[cfg(test)]

@@ -38,6 +38,9 @@ struct MainArgs {
     #[arg(long)]
     geometric_parallel_single_node: bool,
 
+    #[arg(long)]
+    geometric_sequential_single_node: bool,
+
     #[arg(long, default_value = "0")]
     start_node: usize,
 
@@ -109,6 +112,14 @@ fn run(graph: impl RandomAccessGraph + Sync, args: MainArgs, results_dir: &str) 
         let res = geometric::compute_single_node_par_visit(
             &graph,
             args.threads,
+            args.start_node,
+            &mut ConcurrentWrapper::with_threshold(1000),
+        );
+        println!("reachable {}", res.reachable)
+    } else if args.geometric_sequential_single_node {
+        did_run = true;
+        let res = geometric::compute_single_node_seq_visit(
+            &graph,
             args.start_node,
             &mut ConcurrentWrapper::with_threshold(1000),
         );

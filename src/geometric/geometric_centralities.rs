@@ -185,6 +185,47 @@ pub fn compute_single_node_par_visit(
     res
 }
 
+
+pub fn compute_single_node_seq_visit_custom<
+    T: Default + Clone + Sync,
+    F: Fn(&mut T, usize, usize),
+>(
+    graph: &(impl RandomAccessGraph + Sync),
+    node: usize,
+    pl: &mut impl ProgressLog,
+    op: F,
+) -> T {
+    let num_nodes = graph.num_nodes();
+
+    pl.item_name("visit").expected_updates(Some(num_nodes));
+
+    pl.start(format!(
+        "Computing geometric centralities of node {node} with single-threaded sequential visit...",
+    ));
+
+    let mut bfs = Seq::new(graph);
+    let res = single_visit_sequential_custom(node, &mut bfs, op);
+
+    pl.done();
+    res
+}
+
+pub fn compute_single_node_seq_visit(
+    graph: &(impl RandomAccessGraph + Sync),
+    node: usize,
+    pl: &mut impl ProgressLog,
+) -> DefaultGeometric {
+    let mut res = compute_single_node_seq_visit_custom(
+        graph,
+        node,
+        pl,
+        default_geometric_operation(DEFAULT_ALPHA),
+    );
+
+    default_geometric_post_op(&mut res);
+    res
+}
+
 pub fn compute_all_par_visit(
     graph: &(impl RandomAccessGraph + Sync),
     num_of_threads: usize,
@@ -327,6 +368,19 @@ mod tests {
         res
     }
 
+    fn single_node_seq_visit_strategy(graph: &VecGraph) -> Box<[DefaultGeometric]> {
+        let num_nodes = graph.num_nodes();
+        let mut res = vec![DefaultGeometric::default(); num_nodes].into_boxed_slice();
+        for n in 0..num_nodes {
+            res[n] = geometric_centralities::compute_single_node_seq_visit(
+                &graph,
+                n,
+                dsi_progress_logger::no_logging!(),
+            );
+        }
+        res
+    }
+
     fn compute_generic(strategy: fn(&VecGraph) -> Box<[DefaultGeometric]>) {
         let graph = VecGraph::from_arcs(transpose_arc_list([(0, 1), (1, 2)]));
         let res = strategy(&graph);
@@ -391,5 +445,15 @@ mod tests {
     #[test]
     fn test_compute_cycle_single_node_par_visit() {
         compute_cycle_generic(single_node_par_visit_strategy);
+    }
+
+    #[test]
+    fn test_compute_single_node_seq_visit() {
+        compute_generic(single_node_seq_visit_strategy);
+    }
+
+    #[test]
+    fn test_compute_cycle_single_node_seq_visit() {
+        compute_cycle_generic(single_node_seq_visit_strategy);
     }
 }
